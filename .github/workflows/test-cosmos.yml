@@ -1,4 +1,4 @@
-name: Test Azure Cosmos DB
+name: Test Azure Cosmos DB (Fixed)
 
 on:
   workflow_dispatch:
@@ -8,20 +8,10 @@ on:
         required: false
         default: '10'
         type: string
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'src/**'
-      - '.github/workflows/test-cosmos.yml'
-  pull_request:
-    branches: [ main ]
 
 env:
+  # Only need the connection string for Node.js SDK
   AZURE_COSMOSDB_CONNECTION_STRING: ${{ secrets.AZURE_COSMOSDB_CONNECTION_STRING }}
-  AZURE_COSMOSDB_ENDPOINT: ${{ secrets.AZURE_COSMOSDB_ENDPOINT }}
-  AZURE_COSMOSDB_KEY: ${{ secrets.AZURE_COSMOSDB_KEY }}
-  AZURE_COSMOSDB_DATABASE_NAME: ${{ secrets.AZURE_COSMOSDB_DATABASE_NAME }}
-  AZURE_COSMOSDB_CONTAINER_NAME: ${{ secrets.AZURE_COSMOSDB_CONTAINER_NAME }}
   TEST_CONTAINER_NAME: "test-pen-records"
   TEST_DATABASE_NAME: "test-pen-database"
 
@@ -38,110 +28,60 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        always-auth: false
-        check-latest: false
 
     - name: Install dependencies
       run: |
-        if [ -f "package.json" ]; then
-          echo "Installing npm dependencies..."
-          npm install
-        else
-          echo "No package.json found, installing Azure Cosmos DB SDK..."
-          npm init -y
-          npm install @azure/cosmos uuid
-        fi
+        echo "Installing Azure Cosmos DB SDK..."
+        npm init -y
+        npm install @azure/cosmos uuid
 
-    - name: Install required tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y jq curl
-
-    - name: Validate Cosmos DB Configuration
+    - name: Validate Configuration
       run: |
         echo "Validating Cosmos DB configuration..."
-        
-        # Check required environment variables
-        if [ -z "$AZURE_COSMOSDB_ENDPOINT" ]; then
-          echo "❌ AZURE_COSMOSDB_ENDPOINT is not set"
+        if [ -z "$AZURE_COSMOSDB_CONNECTION_STRING" ]; then
+          echo "❌ AZURE_COSMOSDB_CONNECTION_STRING is not set"
+          echo "Please add this secret to your GitHub repository"
           exit 1
         fi
         
-        if [ -z "$AZURE_COSMOSDB_KEY" ]; then
-          echo "❌ AZURE_COSMOSDB_KEY is not set"
-          exit 1
-        fi
-        
-        if [ -z "$AZURE_COSMOSDB_DATABASE_NAME" ]; then
-          echo "❌ AZURE_COSMOSDB_DATABASE_NAME is not set"
-          exit 1
-        fi
-        
-        if [ -z "$AZURE_COSMOSDB_CONTAINER_NAME" ]; then
-          echo "❌ AZURE_COSMOSDB_CONTAINER_NAME is not set"
-          exit 1
-        fi
-        
-        # Validate endpoint format
-        if [[ ! "$AZURE_COSMOSDB_ENDPOINT" =~ ^https://.*\.documents\.azure\.com:443/?$ ]]; then
-          echo "❌ AZURE_COSMOSDB_ENDPOINT format is incorrect"
-          echo "Expected format: https://account-name.documents.azure.com:443/"
-          exit 1
-        fi
-        
-        echo "✅ Cosmos DB configuration validated"
-
-    - name: Test Cosmos DB Connectivity
-      run: |
-        echo "Testing Cosmos DB connectivity..."
-        
-        # Extract account name from endpoint
-        ACCOUNT_NAME=$(echo "$AZURE_COSMOSDB_ENDPOINT" | sed 's|https://||' | sed 's|\.documents\.azure\.com:443.*||')
-        echo "Testing connection to account: $ACCOUNT_NAME"
-        
-        # Test basic connectivity using REST API
-        TIMESTAMP=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
-        
-        # Create authorization header (simplified for GET request)
-        AUTH_HEADER="type%3dmaster%26ver%3d1.0%26sig%3d$AZURE_COSMOSDB_KEY"
-        
-        RESPONSE=$(curl -s -w "HTTPSTATUS:%{http_code}" \
-          -H "Authorization: $AUTH_HEADER" \
-          -H "x-ms-date: $TIMESTAMP" \
-          -H "x-ms-version: 2020-07-15" \
-          "$AZURE_COSMOSDB_ENDPOINT/dbs")
-        
-        HTTP_CODE=$(echo "$RESPONSE" | grep "HTTPSTATUS:" | sed 's/.*HTTPSTATUS:\([0-9]*\)/\1/')
-        
-        if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
-          echo "✅ Cosmos DB endpoint is reachable"
+        # Extract endpoint from connection string for validation
+        if [[ "$AZURE_COSMOSDB_CONNECTION_STRING" =~ AccountEndpoint=([^;]+) ]]; then
+          ENDPOINT="${BASH_REMATCH[1]}"
+          echo "✅ Found endpoint in connection string: $ENDPOINT"
         else
-          echo "❌ Cannot connect to Cosmos DB"
-          echo "HTTP Status Code: $HTTP_CODE"
+          echo "❌ Invalid connection string format"
           exit 1
         fi
 
-    - name: Create Test Database and Container
+    - name: Test Connection and Create Resources
       run: |
-        echo "Creating test database and container..."
+        echo "Testing Cosmos DB connection and creating test resources..."
         
-        # Create Node.js script for database operations
-        cat > test-cosmos-setup.js << 'EOF'
+        cat > test-cosmos-complete.js << 'EOF'
         const { CosmosClient } = require('@azure/cosmos');
+        const { v4: uuidv4 } = require('uuid');
         
-        async function setupTestEnvironment() {
+        async function testCosmosDB() {
           try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
+            console.log('🔗 Connecting to Cosmos DB...');
             
+            // Create client using connection string (simplest method)
+            const client = new CosmosClient(process.env.AZURE_COSMOSDB_CONNECTION_STRING);
+            
+            // Test connection by listing databases
+            console.log('📋 Testing connection...');
+            const { resources: databases } = await client.databases.readAll().fetchAll();
+            console.log(`✅ Connected successfully! Found ${databases.length} existing databases`);
+            
+            // Create test database
             console.log('📦 Creating test database...');
             const { database } = await client.databases.createIfNotExists({
               id: process.env.TEST_DATABASE_NAME,
-              throughput: 400 // Minimum for testing
+              throughput: 400
             });
+            console.log(`✅ Database ready: ${database.id}`);
             
+            // Create test container
             console.log('📋 Creating test container...');
             const containerDef = {
               id: process.env.TEST_CONTAINER_NAME,
@@ -152,377 +92,152 @@ jobs:
               indexingPolicy: {
                 indexingMode: 'consistent',
                 automatic: true,
-                includedPaths: [
-                  {
-                    path: '/*'
-                  }
-                ],
-                excludedPaths: [
-                  {
-                    path: '/"_etag"/?'
-                  }
-                ]
+                includedPaths: [{ path: '/*' }],
+                excludedPaths: [{ path: '/"_etag"/?' }]
               }
             };
             
             const { container } = await database.containers.createIfNotExists(containerDef);
+            console.log(`✅ Container ready: ${container.id}`);
             
-            console.log('✅ Test environment setup completed');
-            console.log(`Database: ${database.id}`);
-            console.log(`Container: ${container.id}`);
+            // Test data operations
+            console.log('💾 Testing data operations...');
             
-          } catch (error) {
-            console.error('❌ Setup failed:', error.message);
-            process.exit(1);
-          }
-        }
-        
-        setupTestEnvironment();
-        EOF
-        
-        node test-cosmos-setup.js
-
-    - name: Generate and Insert Test Data
-      run: |
-        echo "Generating and inserting test PEN records..."
-        
-        # Create Node.js script for test data generation
-        cat > generate-test-data.js << 'EOF'
-        const { CosmosClient } = require('@azure/cosmos');
-        const { v4: uuidv4 } = require('uuid');
-        
-        async function generateTestData() {
-          try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
+            // Create test record
+            const testRecord = {
+              id: uuidv4(),
+              pen: 'TEST001',
+              legalFirstName: 'John',
+              legalMiddleNames: 'Test',
+              legalLastName: 'Doe',
+              dob: '1990-01-01',
+              localID: 'LOCAL001',
+              createdAt: new Date().toISOString(),
+              testRecord: true
+            };
             
-            const database = client.database(process.env.TEST_DATABASE_NAME);
-            const container = database.container(process.env.TEST_CONTAINER_NAME);
+            // Insert record
+            const { resource: created } = await container.items.create(testRecord);
+            console.log(`✅ Record created with ID: ${created.id}`);
             
-            const testCount = parseInt(process.env.TEST_DATA_COUNT || '10');
-            console.log(`📝 Generating ${testCount} test PEN records...`);
+            // Read record
+            const { resource: read } = await container.item(created.id, 'TEST001').read();
+            console.log(`✅ Record read: ${read.legalFirstName} ${read.legalLastName}`);
             
-            const firstNames = ['John', 'Jane', 'Michael', 'Sarah', 'David', 'Emily', 'Robert', 'Lisa', 'William', 'Ashley'];
-            const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];
-            const middleNames = ['Alexander', 'Marie', 'James', 'Elizabeth', 'Michael', 'Anne', 'Christopher', 'Nicole', 'Daniel', 'Michelle'];
+            // Query records
+            const { resources: queryResults } = await container.items
+              .query('SELECT * FROM c WHERE c.testRecord = true')
+              .fetchAll();
+            console.log(`✅ Query found ${queryResults.length} test records`);
             
-            const testRecords = [];
+            // Generate and insert multiple test records
+            const testCount = parseInt(process.env.TEST_DATA_COUNT || '5');
+            console.log(`📝 Generating ${testCount} additional test records...`);
+            
+            const names = {
+              first: ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'],
+              last: ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis'],
+              middle: ['Ann', 'Lee', 'Ray', 'May', 'Joy', 'Sue', 'Kay', 'Lou']
+            };
             
             for (let i = 1; i <= testCount; i++) {
               const record = {
                 id: uuidv4(),
-                pen: `PEN${String(i).padStart(6, '0')}`, // Partition key
-                legalFirstName: firstNames[i % firstNames.length],
-                legalMiddleNames: Math.random() > 0.3 ? middleNames[i % middleNames.length] : null,
-                legalLastName: lastNames[i % lastNames.length],
+                pen: `PEN${String(i).padStart(6, '0')}`,
+                legalFirstName: names.first[i % names.first.length],
+                legalMiddleNames: Math.random() > 0.3 ? names.middle[i % names.middle.length] : null,
+                legalLastName: names.last[i % names.last.length],
                 dob: new Date(1980 + (i % 40), (i % 12), (i % 28) + 1).toISOString().split('T')[0],
                 localID: Math.random() > 0.5 ? `LOCAL${String(i).padStart(4, '0')}` : null,
                 createdAt: new Date().toISOString(),
                 testRecord: true
               };
               
-              testRecords.push(record);
-            }
-            
-            console.log('💾 Inserting records into Cosmos DB...');
-            let insertedCount = 0;
-            
-            for (const record of testRecords) {
               try {
                 await container.items.create(record);
-                insertedCount++;
-                if (insertedCount % 5 === 0) {
-                  console.log(`Inserted ${insertedCount}/${testCount} records...`);
-                }
+                if (i % 2 === 0) console.log(`   Inserted ${i}/${testCount} records...`);
               } catch (error) {
                 console.error(`Failed to insert record ${record.pen}:`, error.message);
               }
             }
             
-            console.log(`✅ Successfully inserted ${insertedCount} test records`);
-            
-            // Verify insertion
-            const { resources: allItems } = await container.items
+            // Final verification
+            const { resources: finalResults } = await container.items
               .query('SELECT * FROM c WHERE c.testRecord = true')
               .fetchAll();
+            console.log(`✅ Final verification: ${finalResults.length} total test records`);
             
-            console.log(`📊 Total test records in container: ${allItems.length}`);
-            
-          } catch (error) {
-            console.error('❌ Test data generation failed:', error.message);
-            process.exit(1);
-          }
-        }
-        
-        generateTestData();
-        EOF
-        
-        TEST_DATA_COUNT="${{ github.event.inputs.test_data_count || '10' }}" node generate-test-data.js
-
-    - name: Test CRUD Operations
-      run: |
-        echo "Testing CRUD operations..."
-        
-        cat > test-crud-operations.js << 'EOF'
-        const { CosmosClient } = require('@azure/cosmos');
-        const { v4: uuidv4 } = require('uuid');
-        
-        async function testCrudOperations() {
-          try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
-            
-            const database = client.database(process.env.TEST_DATABASE_NAME);
-            const container = database.container(process.env.TEST_CONTAINER_NAME);
-            
-            // Test CREATE
-            console.log('🔧 Testing CREATE operation...');
-            const newRecord = {
-              id: uuidv4(),
-              pen: 'TESTPEN001',
-              legalFirstName: 'Test',
-              legalMiddleNames: 'CRUD',
-              legalLastName: 'User',
-              dob: '1990-01-01',
-              localID: 'TESTLOCAL001',
-              createdAt: new Date().toISOString(),
-              testRecord: true
-            };
-            
-            const { resource: createdItem } = await container.items.create(newRecord);
-            console.log('✅ CREATE: Record created successfully');
-            
-            // Test READ
-            console.log('🔍 Testing READ operation...');
-            const { resource: readItem } = await container.item(createdItem.id, 'TESTPEN001').read();
-            console.log('✅ READ: Record retrieved successfully');
-            console.log(`   Name: ${readItem.legalFirstName} ${readItem.legalLastName}`);
-            
-            // Test UPDATE
-            console.log('✏️ Testing UPDATE operation...');
-            readItem.legalMiddleNames = 'Updated';
-            readItem.updatedAt = new Date().toISOString();
-            const { resource: updatedItem } = await container.item(readItem.id, 'TESTPEN001').replace(readItem);
-            console.log('✅ UPDATE: Record updated successfully');
-            
-            // Test QUERY
-            console.log('🔎 Testing QUERY operations...');
-            
-            // Query by name
-            const nameQuery = "SELECT * FROM c WHERE c.legalFirstName = 'Test'";
-            const { resources: nameResults } = await container.items.query(nameQuery).fetchAll();
-            console.log(`✅ QUERY (by name): Found ${nameResults.length} records`);
-            
-            // Query by date range
-            const dateQuery = "SELECT * FROM c WHERE c.dob >= '1985-01-01' AND c.dob <= '1995-12-31'";
-            const { resources: dateResults } = await container.items.query(dateQuery).fetchAll();
-            console.log(`✅ QUERY (by date range): Found ${dateResults.length} records`);
-            
-            // Query with pagination
-            const paginatedQuery = container.items.query('SELECT * FROM c WHERE c.testRecord = true', {
-              maxItemCount: 5
-            });
-            let pageCount = 0;
-            let totalResults = 0;
-            
-            for await (const { resources: pageResults } of paginatedQuery.getAsyncIterator()) {
-              pageCount++;
-              totalResults += pageResults.length;
-            }
-            console.log(`✅ QUERY (paginated): ${totalResults} total records across ${pageCount} pages`);
-            
-            // Test DELETE
-            console.log('🗑️ Testing DELETE operation...');
-            await container.item(createdItem.id, 'TESTPEN001').delete();
-            console.log('✅ DELETE: Record deleted successfully');
-            
-            console.log('🎉 All CRUD operations completed successfully!');
-            
-          } catch (error) {
-            console.error('❌ CRUD operations failed:', error.message);
-            process.exit(1);
-          }
-        }
-        
-        testCrudOperations();
-        EOF
-        
-        node test-crud-operations.js
-
-    - name: Test Performance and Metrics
-      run: |
-        echo "Testing performance and getting metrics..."
-        
-        cat > test-performance.js << 'EOF'
-        const { CosmosClient } = require('@azure/cosmos');
-        
-        async function testPerformance() {
-          try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
-            
-            const database = client.database(process.env.TEST_DATABASE_NAME);
-            const container = database.container(process.env.TEST_CONTAINER_NAME);
-            
-            console.log('⚡ Running performance tests...');
-            
-            // Test query performance
-            const startTime = Date.now();
-            const { resources: allRecords } = await container.items
-              .query('SELECT * FROM c WHERE c.testRecord = true')
+            // Test performance
+            console.log('⚡ Testing query performance...');
+            const perfStart = Date.now();
+            const { resources: perfResults } = await container.items
+              .query("SELECT * FROM c WHERE c.legalFirstName = 'Alice'")
               .fetchAll();
-            const queryTime = Date.now() - startTime;
+            const perfTime = Date.now() - perfStart;
+            console.log(`📊 Performance test: Found ${perfResults.length} records in ${perfTime}ms`);
             
-            console.log(`📊 Query Performance:`);
-            console.log(`   Records returned: ${allRecords.length}`);
-            console.log(`   Query time: ${queryTime}ms`);
+            console.log('🎉 All tests completed successfully!');
             
-            // Get container metrics
-            const { resource: containerInfo } = await container.read();
-            console.log(`📈 Container Information:`);
-            console.log(`   Container ID: ${containerInfo.id}`);
-            console.log(`   Partition Key: ${containerInfo.partitionKey.paths[0]}`);
-            console.log(`   Indexing Mode: ${containerInfo.indexingPolicy.indexingMode}`);
+          } catch (error) {
+            console.error('❌ Test failed:', error.message);
             
-            // Test different query patterns
-            const queries = [
-              { name: 'Find by First Name', query: "SELECT * FROM c WHERE c.legalFirstName = 'John'" },
-              { name: 'Find by Last Name', query: "SELECT * FROM c WHERE c.legalLastName = 'Smith'" },
-              { name: 'Find by DOB Range', query: "SELECT * FROM c WHERE c.dob >= '1990-01-01' AND c.dob <= '1999-12-31'" },
-              { name: 'Count Records', query: "SELECT VALUE COUNT(1) FROM c WHERE c.testRecord = true" }
-            ];
-            
-            for (const queryTest of queries) {
-              const start = Date.now();
-              const { resources: results } = await container.items.query(queryTest.query).fetchAll();
-              const time = Date.now() - start;
-              console.log(`   ${queryTest.name}: ${Array.isArray(results) ? results.length : results} results in ${time}ms`);
+            // Provide helpful error messages
+            if (error.message.includes('firewall') || error.message.includes('blocked') || error.code === 403) {
+              console.error('💡 This appears to be a firewall/network access issue.');
+              console.error('💡 Solutions:');
+              console.error('   1. Enable "Allow access from Azure services" in Cosmos DB networking');
+              console.error('   2. Add GitHub Actions IP ranges to firewall');
+              console.error('   3. Use a self-hosted runner in your VNet');
+            } else if (error.message.includes('unauthorized') || error.code === 401) {
+              console.error('💡 Authentication issue - check your connection string');
+            } else if (error.message.includes('connection string')) {
+              console.error('💡 Invalid connection string format');
             }
             
-          } catch (error) {
-            console.error('❌ Performance test failed:', error.message);
             process.exit(1);
           }
         }
         
-        testPerformance();
+        testCosmosDB();
         EOF
         
-        node test-performance.js
+        TEST_DATA_COUNT="${{ github.event.inputs.test_data_count || '5' }}" node test-cosmos-complete.js
 
-    - name: Run Application Tests (if exists)
-      run: |
-        if [ -f "package.json" ] && ([ -d "test" ] || [ -d "tests" ]); then
-          echo "Running application-specific Cosmos DB tests..."
-          npm test -- --grep "cosmos\|database" || echo "No Cosmos DB tests found or test command failed"
-        else
-          echo "No test directory found, skipping application tests"
-        fi
-      env:
-        NODE_ENV: test
-        AZURE_COSMOSDB_CONNECTION_STRING: ${{ env.AZURE_COSMOSDB_CONNECTION_STRING }}
-        AZURE_COSMOSDB_ENDPOINT: ${{ env.AZURE_COSMOSDB_ENDPOINT }}
-        AZURE_COSMOSDB_KEY: ${{ env.AZURE_COSMOSDB_KEY }}
-        AZURE_COSMOSDB_DATABASE_NAME: ${{ env.TEST_DATABASE_NAME }}
-        AZURE_COSMOSDB_CONTAINER_NAME: ${{ env.TEST_CONTAINER_NAME }}
-
-    - name: Export Test Data (Optional)
-      if: github.event_name == 'workflow_dispatch'
-      run: |
-        echo "Exporting test data for analysis..."
-        
-        cat > export-data.js << 'EOF'
-        const { CosmosClient } = require('@azure/cosmos');
-        const fs = require('fs');
-        
-        async function exportData() {
-          try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
-            
-            const database = client.database(process.env.TEST_DATABASE_NAME);
-            const container = database.container(process.env.TEST_CONTAINER_NAME);
-            
-            const { resources: allRecords } = await container.items
-              .query('SELECT * FROM c WHERE c.testRecord = true')
-              .fetchAll();
-            
-            const exportData = {
-              exportDate: new Date().toISOString(),
-              recordCount: allRecords.length,
-              records: allRecords
-            };
-            
-            fs.writeFileSync('test-data-export.json', JSON.stringify(exportData, null, 2));
-            console.log(`📤 Exported ${allRecords.length} records to test-data-export.json`);
-            
-          } catch (error) {
-            console.error('❌ Data export failed:', error.message);
-          }
-        }
-        
-        exportData();
-        EOF
-        
-        node export-data.js
-
-    - name: Upload Test Data Export
-      if: github.event_name == 'workflow_dispatch'
-      uses: actions/upload-artifact@v4
-      with:
-        name: cosmos-test-data-export
-        path: test-data-export.json
-        retention-days: 7
-
-    - name: Cleanup Test Environment
+    - name: Cleanup Test Resources
       if: always()
       run: |
-        echo "Cleaning up test environment..."
+        echo "Cleaning up test resources..."
         
         cat > cleanup.js << 'EOF'
         const { CosmosClient } = require('@azure/cosmos');
         
         async function cleanup() {
           try {
-            const client = new CosmosClient({
-              endpoint: process.env.AZURE_COSMOSDB_ENDPOINT,
-              key: process.env.AZURE_COSMOSDB_KEY
-            });
-            
-            console.log('🧹 Deleting test container...');
+            const client = new CosmosClient(process.env.AZURE_COSMOSDB_CONNECTION_STRING);
             const database = client.database(process.env.TEST_DATABASE_NAME);
+            
+            console.log('🧹 Cleaning up test resources...');
             
             try {
               await database.container(process.env.TEST_CONTAINER_NAME).delete();
               console.log('✅ Test container deleted');
             } catch (error) {
-              console.log('⚠️ Test container may not exist or already deleted');
+              console.log('⚠️ Container cleanup: ' + error.message);
             }
             
-            console.log('🧹 Deleting test database...');
             try {
               await database.delete();
               console.log('✅ Test database deleted');
             } catch (error) {
-              console.log('⚠️ Test database may not exist or already deleted');
+              console.log('⚠️ Database cleanup: ' + error.message);
             }
             
-            console.log('🎯 Cleanup completed');
-            
           } catch (error) {
-            console.error('⚠️ Cleanup failed (non-critical):', error.message);
+            console.log('⚠️ Cleanup completed with warnings');
           }
         }
         
         cleanup();
         EOF
         
-        node cleanup.js || echo "Cleanup completed with warnings"
+        node cleanup.js

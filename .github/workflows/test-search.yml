@@ -1,0 +1,231 @@
+name: Test Azure AI Search
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/test-search.yml'
+  pull_request:
+    branches: [ main ]
+
+env:
+  AZURE_SEARCH_SERVICE_NAME: ${{ secrets.AZURE_SEARCH_SERVICE_NAME }}
+  AZURE_SEARCH_ADMIN_KEY: ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
+  AZURE_SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}
+  AZURE_SEARCH_INDEX_NAME: "test-documents-index"
+
+jobs:
+  test-azure-search:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Create Azure AI Search Index
+      run: |
+        echo "Creating Azure AI Search index..."
+        curl -X PUT \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}?api-version=2023-11-01" \
+          -H "Content-Type: application/json" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" \
+          -d '{
+            "name": "${{ env.AZURE_SEARCH_INDEX_NAME }}",
+            "fields": [
+              {
+                "name": "id",
+                "type": "Edm.String",
+                "key": true,
+                "searchable": false,
+                "filterable": true,
+                "retrievable": true
+              },
+              {
+                "name": "title",
+                "type": "Edm.String",
+                "searchable": true,
+                "filterable": true,
+                "retrievable": true,
+                "analyzer": "standard.lucene"
+              },
+              {
+                "name": "content",
+                "type": "Edm.String",
+                "searchable": true,
+                "retrievable": true,
+                "analyzer": "standard.lucene"
+              },
+              {
+                "name": "category",
+                "type": "Edm.String",
+                "searchable": true,
+                "filterable": true,
+                "facetable": true,
+                "retrievable": true
+              },
+              {
+                "name": "tags",
+                "type": "Collection(Edm.String)",
+                "searchable": true,
+                "filterable": true,
+                "facetable": true,
+                "retrievable": true
+              },
+              {
+                "name": "lastModified",
+                "type": "Edm.DateTimeOffset",
+                "filterable": true,
+                "sortable": true,
+                "retrievable": true
+              }
+            ],
+            "suggesters": [
+              {
+                "name": "sg",
+                "searchMode": "analyzingInfixMatching",
+                "sourceFields": ["title", "content"]
+              }
+            ],
+            "scoringProfiles": [],
+            "defaultScoringProfile": null,
+            "corsOptions": {
+              "allowedOrigins": ["*"],
+              "maxAgeInSeconds": 300
+            }
+          }'
+
+    - name: Wait for index creation
+      run: sleep 10
+
+    - name: Upload test data to Azure AI Search
+      run: |
+        echo "Uploading test documents..."
+        curl -X POST \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs/index?api-version=2023-11-01" \
+          -H "Content-Type: application/json" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" \
+          -d '{
+            "value": [
+              {
+                "@search.action": "upload",
+                "id": "1",
+                "title": "Getting Started with Azure AI Search",
+                "content": "Azure AI Search is a cloud-based search service that provides a rich search experience over private, heterogeneous content in web, mobile, and enterprise applications.",
+                "category": "Documentation",
+                "tags": ["azure", "search", "ai", "getting-started"],
+                "lastModified": "2024-01-15T10:00:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "2",
+                "title": "Advanced Search Features",
+                "content": "Learn about advanced features like faceted navigation, autocomplete, suggestions, and semantic search capabilities.",
+                "category": "Tutorial",
+                "tags": ["azure", "search", "advanced", "features"],
+                "lastModified": "2024-01-16T14:30:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "3",
+                "title": "Search Index Management",
+                "content": "Best practices for creating, updating, and managing search indexes in Azure AI Search service.",
+                "category": "Best Practices",
+                "tags": ["azure", "search", "index", "management"],
+                "lastModified": "2024-01-17T09:15:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "4",
+                "title": "API Integration Guide",
+                "content": "How to integrate Azure AI Search APIs into your applications using REST APIs and SDKs.",
+                "category": "Integration",
+                "tags": ["azure", "search", "api", "integration", "sdk"],
+                "lastModified": "2024-01-18T16:45:00Z"
+              }
+            ]
+          }'
+
+    - name: Wait for indexing
+      run: sleep 15
+
+    - name: Test Search Connection
+      run: |
+        echo "Testing basic search connection..."
+        RESPONSE=$(curl -s -w "%{http_code}" \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}")
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        BODY="${RESPONSE%???}"
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        echo "Response Body: $BODY"
+        
+        if [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ Search connection successful"
+        else
+          echo "❌ Search connection failed"
+          exit 1
+        fi
+
+    - name: Test Search Queries
+      run: |
+        echo "Testing search queries..."
+        
+        # Test 1: Simple search
+        echo "🔍 Testing simple search for 'Azure'..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=Azure" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length'
+        
+        # Test 2: Filtered search
+        echo "🔍 Testing filtered search..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*&\$filter=category eq 'Tutorial'" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length'
+        
+        # Test 3: Faceted search
+        echo "🔍 Testing faceted search..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*&facet=category" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.["@search.facets"]'
+
+    - name: Test Suggestions
+      run: |
+        echo "Testing search suggestions..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs/suggest?api-version=2023-11-01&search=Azu&suggesterName=sg" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length'
+
+    - name: Test Index Statistics
+      run: |
+        echo "Getting index statistics..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/stats?api-version=2023-11-01" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.'
+
+    - name: Run Application Tests
+      run: |
+        echo "Running application-specific search tests..."
+        npm test -- --grep "search"
+      env:
+        NODE_ENV: test
+        AZURE_SEARCH_SERVICE_NAME: ${{ env.AZURE_SEARCH_SERVICE_NAME }}
+        AZURE_SEARCH_ADMIN_KEY: ${{ env.AZURE_SEARCH_ADMIN_KEY }}
+        AZURE_SEARCH_ENDPOINT: ${{ env.AZURE_SEARCH_ENDPOINT }}
+        AZURE_SEARCH_INDEX_NAME: ${{ env.AZURE_SEARCH_INDEX_NAME }}
+
+    - name: Cleanup Test Index (Optional)
+      if: always()
+      run: |
+        echo "Cleaning up test index..."
+        curl -X DELETE \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}?api-version=2023-11-01" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}"
+        echo "Test index deleted"

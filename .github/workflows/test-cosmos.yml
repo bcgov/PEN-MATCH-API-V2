@@ -33,7 +33,9 @@ jobs:
       run: |
         echo "Installing Azure Cosmos DB SDK..."
         npm init -y
-        npm install @azure/cosmos uuid
+        # Install specific version of uuid that supports CommonJS or use crypto for UUID generation
+        npm install @azure/cosmos
+        echo "Dependencies installed successfully"
 
     - name: Validate Configuration
       run: |
@@ -59,14 +61,29 @@ jobs:
         
         cat > test-cosmos-complete.js << 'EOF'
         const { CosmosClient } = require('@azure/cosmos');
-        const { v4: uuidv4 } = require('uuid');
+        const crypto = require('crypto');
+        
+        // Generate UUID using Node.js built-in crypto module
+        function generateUUID() {
+          return crypto.randomUUID();
+        }
         
         async function testCosmosDB() {
           try {
             console.log('🔗 Connecting to Cosmos DB...');
             
-            // Create client using connection string (simplest method)
-            const client = new CosmosClient(process.env.AZURE_COSMOSDB_CONNECTION_STRING);
+            // Create client using connection string with enhanced configuration
+            const client = new CosmosClient({
+              connectionString: process.env.AZURE_COSMOSDB_CONNECTION_STRING,
+              connectionPolicy: {
+                requestTimeout: 30000,
+                retryOptions: {
+                  maxRetryAttemptCount: 3,
+                  fixedRetryIntervalInMilliseconds: 2000,
+                  maxWaitTimeInSeconds: 60
+                }
+              }
+            });
             
             // Test connection by listing databases
             console.log('📋 Testing connection...');
@@ -81,7 +98,7 @@ jobs:
             });
             console.log(`✅ Database ready: ${database.id}`);
             
-            // Create test container
+            // Create test container with optimized settings
             console.log('📋 Creating test container...');
             const containerDef = {
               id: process.env.TEST_CONTAINER_NAME,
@@ -92,8 +109,29 @@ jobs:
               indexingPolicy: {
                 indexingMode: 'consistent',
                 automatic: true,
-                includedPaths: [{ path: '/*' }],
-                excludedPaths: [{ path: '/"_etag"/?' }]
+                includedPaths: [
+                  { path: '/*' }
+                ],
+                excludedPaths: [
+                  { path: '/"_etag"/?' },
+                  { path: '/"_attachments"/?' },
+                  { path: '/"_ts"/?' }
+                ],
+                compositeIndexes: [
+                  [
+                    { path: '/legalLastName', order: 'ascending' },
+                    { path: '/legalFirstName', order: 'ascending' }
+                  ],
+                  [
+                    { path: '/dob', order: 'descending' },
+                    { path: '/pen', order: 'ascending' }
+                  ]
+                ]
+              },
+              uniqueKeyPolicy: {
+                uniqueKeys: [
+                  { paths: ['/pen'] }
+                ]
               }
             };
             
@@ -105,7 +143,7 @@ jobs:
             
             // Create test record
             const testRecord = {
-              id: uuidv4(),
+              id: generateUUID(),
               pen: 'TEST001',
               legalFirstName: 'John',
               legalMiddleNames: 'Test',
@@ -113,18 +151,22 @@ jobs:
               dob: '1990-01-01',
               localID: 'LOCAL001',
               createdAt: new Date().toISOString(),
-              testRecord: true
+              testRecord: true,
+              _partitionKey: 'TEST001' // Explicit partition key for clarity
             };
             
             // Insert record
+            console.log('   Creating initial test record...');
             const { resource: created } = await container.items.create(testRecord);
             console.log(`✅ Record created with ID: ${created.id}`);
             
             // Read record
+            console.log('   Reading test record...');
             const { resource: read } = await container.item(created.id, 'TEST001').read();
             console.log(`✅ Record read: ${read.legalFirstName} ${read.legalLastName}`);
             
             // Query records
+            console.log('   Querying test records...');
             const { resources: queryResults } = await container.items
               .query('SELECT * FROM c WHERE c.testRecord = true')
               .fetchAll();
@@ -135,51 +177,155 @@ jobs:
             console.log(`📝 Generating ${testCount} additional test records...`);
             
             const names = {
-              first: ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry'],
-              last: ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis'],
-              middle: ['Ann', 'Lee', 'Ray', 'May', 'Joy', 'Sue', 'Kay', 'Lou']
+              first: ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve', 'Frank', 'Grace', 'Henry', 'Ivy', 'Jack'],
+              last: ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'],
+              middle: ['Ann', 'Lee', 'Ray', 'May', 'Joy', 'Sue', 'Kay', 'Lou', 'Belle', 'Rose']
             };
             
+            const batchSize = 25; // Cosmos DB batch limit
+            const records = [];
+            
+            // Generate records first
             for (let i = 1; i <= testCount; i++) {
+              const penNumber = `PEN${String(i).padStart(6, '0')}`;
               const record = {
-                id: uuidv4(),
-                pen: `PEN${String(i).padStart(6, '0')}`,
+                id: generateUUID(),
+                pen: penNumber,
                 legalFirstName: names.first[i % names.first.length],
                 legalMiddleNames: Math.random() > 0.3 ? names.middle[i % names.middle.length] : null,
                 legalLastName: names.last[i % names.last.length],
                 dob: new Date(1980 + (i % 40), (i % 12), (i % 28) + 1).toISOString().split('T')[0],
                 localID: Math.random() > 0.5 ? `LOCAL${String(i).padStart(4, '0')}` : null,
                 createdAt: new Date().toISOString(),
-                testRecord: true
+                testRecord: true,
+                recordIndex: i
               };
+              records.push(record);
+            }
+            
+            // Insert records in batches
+            console.log(`   Inserting ${records.length} records in batches of ${batchSize}...`);
+            let insertedCount = 0;
+            
+            for (let i = 0; i < records.length; i += batchSize) {
+              const batch = records.slice(i, i + batchSize);
               
-              try {
-                await container.items.create(record);
-                if (i % 2 === 0) console.log(`   Inserted ${i}/${testCount} records...`);
-              } catch (error) {
-                console.error(`Failed to insert record ${record.pen}:`, error.message);
+              for (const record of batch) {
+                try {
+                  await container.items.create(record);
+                  insertedCount++;
+                  
+                  if (insertedCount % 10 === 0 || insertedCount === records.length) {
+                    console.log(`   Progress: ${insertedCount}/${records.length} records inserted`);
+                  }
+                } catch (error) {
+                  if (error.code === 409) {
+                    console.log(`   Skipping duplicate record: ${record.pen}`);
+                  } else {
+                    console.error(`   Failed to insert record ${record.pen}:`, error.message);
+                  }
+                }
+              }
+              
+              // Small delay between batches to avoid throttling
+              if (i + batchSize < records.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
               }
             }
             
-            // Final verification
+            // Final verification with detailed queries
+            console.log('🔍 Running verification queries...');
+            
+            // Count total test records
             const { resources: finalResults } = await container.items
               .query('SELECT * FROM c WHERE c.testRecord = true')
               .fetchAll();
-            console.log(`✅ Final verification: ${finalResults.length} total test records`);
+            console.log(`✅ Total test records: ${finalResults.length}`);
             
-            // Test performance
+            // Test different query patterns
+            const queries = [
+              {
+                name: 'Find by First Name',
+                sql: "SELECT * FROM c WHERE c.legalFirstName = 'Alice' AND c.testRecord = true"
+              },
+              {
+                name: 'Find by Last Name',
+                sql: "SELECT * FROM c WHERE c.legalLastName = 'Smith' AND c.testRecord = true"
+              },
+              {
+                name: 'Find by Date Range',
+                sql: "SELECT * FROM c WHERE c.dob >= '1990-01-01' AND c.dob <= '1999-12-31' AND c.testRecord = true"
+              },
+              {
+                name: 'Find records with Middle Names',
+                sql: "SELECT * FROM c WHERE c.legalMiddleNames != null AND c.testRecord = true"
+              },
+              {
+                name: 'Find records with Local ID',
+                sql: "SELECT * FROM c WHERE c.localID != null AND c.testRecord = true"
+              },
+              {
+                name: 'Count by Last Name',
+                sql: "SELECT c.legalLastName, COUNT(1) as count FROM c WHERE c.testRecord = true GROUP BY c.legalLastName"
+              }
+            ];
+            
             console.log('⚡ Testing query performance...');
-            const perfStart = Date.now();
-            const { resources: perfResults } = await container.items
-              .query("SELECT * FROM c WHERE c.legalFirstName = 'Alice'")
-              .fetchAll();
-            const perfTime = Date.now() - perfStart;
-            console.log(`📊 Performance test: Found ${perfResults.length} records in ${perfTime}ms`);
+            for (const query of queries) {
+              const startTime = Date.now();
+              const { resources: results } = await container.items.query(query.sql).fetchAll();
+              const queryTime = Date.now() - startTime;
+              
+              console.log(`   ${query.name}: ${results.length} results in ${queryTime}ms`);
+              
+              // Show sample result for some queries
+              if (results.length > 0 && query.name === 'Count by Last Name') {
+                console.log(`     Sample: ${JSON.stringify(results[0])}`);
+              }
+            }
+            
+            // Test pagination
+            console.log('📄 Testing pagination...');
+            const pageSize = 5;
+            let pageCount = 0;
+            let totalPaginated = 0;
+            
+            const iterator = container.items.query('SELECT * FROM c WHERE c.testRecord = true', {
+              maxItemCount: pageSize
+            }).getAsyncIterator();
+            
+            for await (const { resources: page } of iterator) {
+              pageCount++;
+              totalPaginated += page.length;
+              console.log(`   Page ${pageCount}: ${page.length} items`);
+              
+              if (pageCount >= 3) { // Limit to first 3 pages for demo
+                console.log(`   ... (stopping after ${pageCount} pages for demo)`);
+                break;
+              }
+            }
+            
+            // Get container statistics
+            console.log('📊 Getting container statistics...');
+            try {
+              const containerResponse = await container.read();
+              console.log(`   Container throughput: ${containerResponse.resource.throughput || 'Shared'}`);
+              console.log(`   Partition key: ${containerResponse.resource.partitionKey.paths.join(', ')}`);
+              console.log(`   Indexing mode: ${containerResponse.resource.indexingPolicy.indexingMode}`);
+            } catch (error) {
+              console.log(`   Could not retrieve container statistics: ${error.message}`);
+            }
             
             console.log('🎉 All tests completed successfully!');
+            console.log(`📈 Summary:`);
+            console.log(`   - Database: ${process.env.TEST_DATABASE_NAME}`);
+            console.log(`   - Container: ${process.env.TEST_CONTAINER_NAME}`);
+            console.log(`   - Records inserted: ${insertedCount}`);
+            console.log(`   - Total test records: ${finalResults.length}`);
             
           } catch (error) {
             console.error('❌ Test failed:', error.message);
+            console.error('Error details:', error);
             
             // Provide helpful error messages
             if (error.message.includes('firewall') || error.message.includes('blocked') || error.code === 403) {
@@ -192,6 +338,10 @@ jobs:
               console.error('💡 Authentication issue - check your connection string');
             } else if (error.message.includes('connection string')) {
               console.error('💡 Invalid connection string format');
+            } else if (error.code === 429) {
+              console.error('💡 Request rate too large - consider reducing batch size');
+            } else if (error.code === 409) {
+              console.error('💡 Conflict - resource may already exist');
             }
             
             process.exit(1);
@@ -213,27 +363,47 @@ jobs:
         
         async function cleanup() {
           try {
-            const client = new CosmosClient(process.env.AZURE_COSMOSDB_CONNECTION_STRING);
-            const database = client.database(process.env.TEST_DATABASE_NAME);
+            const client = new CosmosClient({
+              connectionString: process.env.AZURE_COSMOSDB_CONNECTION_STRING,
+              connectionPolicy: {
+                requestTimeout: 30000
+              }
+            });
             
             console.log('🧹 Cleaning up test resources...');
             
+            const database = client.database(process.env.TEST_DATABASE_NAME);
+            
+            // Try to delete container first
             try {
-              await database.container(process.env.TEST_CONTAINER_NAME).delete();
-              console.log('✅ Test container deleted');
+              const container = database.container(process.env.TEST_CONTAINER_NAME);
+              await container.delete();
+              console.log('✅ Test container deleted successfully');
             } catch (error) {
-              console.log('⚠️ Container cleanup: ' + error.message);
+              if (error.code === 404) {
+                console.log('ℹ️ Test container was not found (may have been deleted already)');
+              } else {
+                console.log('⚠️ Container cleanup warning:', error.message);
+              }
             }
             
+            // Try to delete database
             try {
               await database.delete();
-              console.log('✅ Test database deleted');
+              console.log('✅ Test database deleted successfully');
             } catch (error) {
-              console.log('⚠️ Database cleanup: ' + error.message);
+              if (error.code === 404) {
+                console.log('ℹ️ Test database was not found (may have been deleted already)');
+              } else {
+                console.log('⚠️ Database cleanup warning:', error.message);
+              }
             }
             
+            console.log('🎯 Cleanup completed');
+            
           } catch (error) {
-            console.log('⚠️ Cleanup completed with warnings');
+            console.log('⚠️ Cleanup completed with warnings:', error.message);
+            // Don't fail the workflow on cleanup errors
           }
         }
         

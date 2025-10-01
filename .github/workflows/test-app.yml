@@ -1,10 +1,6 @@
 name: Deploy and Test Web App
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 env:

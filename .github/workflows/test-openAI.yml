@@ -4,13 +4,13 @@ on:
   push:
     branches: [ main, develop ]
     paths:
-      - 'app/test_openai_function.py'
+      - 'app/openai_function.py'
       - 'requirements-test.txt'
       - '.github/workflows/test-openai.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'app/test_openai_function.py'
+      - 'app/openai_function.py'
       - 'requirements-test.txt'
   workflow_dispatch:
     inputs:
@@ -67,8 +67,8 @@ jobs:
           echo "Deployment Model: $AZURE_OPENAI_DEPLOYMENT_NAME"
           
           # Check for required files
-          if [ ! -f "app/test_openai_function.py" ]; then
-            echo "❌ test_openai_function.py not found"
+          if [ ! -f "app/openai_function.py" ]; then
+            echo "❌ openai_function.py not found"
             exit 1
           fi
           
@@ -123,7 +123,7 @@ jobs:
           echo "----------------------------------------"
           
           # Run the test script with timeout
-          timeout 300s python app/test_openai_function.py > test_results.log 2>&1
+          timeout 300s python app/openai_function.py > test_results.log 2>&1
           TEST_EXIT_CODE=$?
           
           echo "Test exit code: $TEST_EXIT_CODE"

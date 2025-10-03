@@ -1,131 +1,234 @@
-name: Test Azure Cosmos DB
+name: Test Cosmos DB Integration
 
 on:
-  workflow_dispatch:
-    inputs:
-      test_data_count:
-        description: 'Number of test records to create'
-        required: false
-        default: '10'
-        type: string
   push:
     branches: [ main, develop ]
     paths:
-      - 'src/**'
-      - 'tests/**'
+      - 'app/cosmos.py'
+      - 'requirements-test.txt'
       - '.github/workflows/test-cosmos.yml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'app/cosmos.py'
+      - 'requirements-test.txt'
+  workflow_dispatch:
+    inputs:
+      database_name:
+        description: 'Cosmos DB database name to test'
+        required: false
+        default: 'testDatabase'
+        type: string
 
-env:
-  AZURE_COSMOSDB_ENDPOINT: ${{ secrets.AZURE_COSMOSDB_ENDPOINT }}
-  AZURE_COSMOSDB_KEY: ${{ secrets.AZURE_COSMOSDB_KEY }}
-  AZURE_COSMOSDB_DATABASE_NAME: ${{ secrets.AZURE_COSMOSDB_DATABASE_NAME }}
-  AZURE_COSMOSDB_CONTAINER_NAME: ${{ secrets.AZURE_COSMOSDB_CONTAINER_NAME }}
-  TEST_CONTAINER_NAME: "test-pen-records"
-  TEST_DATABASE_NAME: "test-pen-database"
+permissions:
+  id-token: write
+  contents: read
+  checks: write
 
 jobs:
-  test-cosmos-db:
+  test-cosmos:
+    name: Test Azure Cosmos DB Integration
     runs-on: ubuntu-latest
     environment: dev
+    timeout-minutes: 15
+    
+    env:
+      # Azure OIDC Configuration
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      # Cosmos DB Configuration
+      AZURE_COSMOSDB_ENDPOINT: ${{ vars.AZURE_COSMOSDB_ENDPOINT }}
+      AZURE_COSMOSDB_DATABASE_NAME: ${{ github.event.inputs.database_name || 'testDatabase' }}
+      AZURE_COSMOSDB_CONTAINER_NAME: 'testContainer'
+      
+      # Python environment
+      PYTHONPATH: ${{ github.workspace }}
+      PYTHONUNBUFFERED: 1
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Validate Environment
+        run: |
+          echo "🔍 Environment Validation"
+          echo "Python version: $(python --version)"
+          echo "Working directory: $(pwd)"
+          echo "Cosmos DB Endpoint: $AZURE_COSMOSDB_ENDPOINT"
+          echo "Database Name: $AZURE_COSMOSDB_DATABASE_NAME"
+          
+          # Check for required files
+          if [ ! -f "app/cosmos.py" ]; then
+            echo "❌ cosmos.py not found"
+            exit 1
+          fi
+          
+          echo "✅ All required files found"
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing Python dependencies..."
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Install essential packages for Cosmos DB
+          pip install azure-cosmos>=4.5.0 azure-identity>=1.15.0
+          
+          # Install test requirements if available
+          if [ -f "requirements-test.txt" ]; then
+            pip install -r requirements-test.txt
+          fi
+          
+          # Verify installations
+          echo "📋 Installed packages:"
+          pip list | grep -E "(azure-cosmos|azure-identity)"
+
+      - name: Validate Azure Cosmos DB Configuration
+        run: |
+          echo "🔐 Validating Azure Cosmos DB configuration..."
+          
+          # Check endpoint format
+          if [[ ! "$AZURE_COSMOSDB_ENDPOINT" =~ ^https://.*\.documents\.azure\.com.*$ ]]; then
+            echo "❌ Cosmos DB endpoint format appears invalid"
+            exit 1
+          fi
+          
+          echo "✅ Configuration validation passed"
+
+      - name: Run Cosmos DB Connection Test
+        id: cosmos_test
+        run: |
+          echo "🧪 Running Cosmos DB Connection Test..."
+          echo "Database: $AZURE_COSMOSDB_DATABASE_NAME"
+          echo "Endpoint: $AZURE_COSMOSDB_ENDPOINT"
+          echo "----------------------------------------"
+          
+          # Run the test script with timeout
+          timeout 300s python app/cosmos.py > test_results.log 2>&1
+          TEST_EXIT_CODE=$?
+          
+          echo "Test exit code: $TEST_EXIT_CODE"
+          
+          # Display results
+          echo "📊 Test Output:"
+          cat test_results.log
+          
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "test_status=success" >> $GITHUB_OUTPUT
+            echo "✅ Cosmos DB test completed successfully"
+          else
+            echo "test_status=failure" >> $GITHUB_OUTPUT
+            echo "❌ Cosmos DB test failed"
+            exit 1
+          fi
+
+      - name: Generate Test Report
+        if: always()
+        run: |
+          echo "📝 Generating test report..."
+          
+          cat > test_report.md << 'EOF'
+          # Azure Cosmos DB Integration Test Report
+          
+          ## Test Configuration
+          - **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}
+          - **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}
+          - **Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          - **Workflow Run**: ${{ github.run_number }}
+          
+          ## Test Results
+          EOF
+          
+          if [ "${{ steps.cosmos_test.outputs.test_status }}" == "success" ]; then
+            echo "✅ **Status**: PASSED" >> test_report.md
+            echo "" >> test_report.md
+            echo "The Azure Cosmos DB integration test completed successfully. Connection and basic operations are working correctly." >> test_report.md
+          else
+            echo "❌ **Status**: FAILED" >> test_report.md
+            echo "" >> test_report.md
+            echo "The Azure Cosmos DB integration test failed. Please check the logs for details." >> test_report.md
+          fi
+          
+          echo "" >> test_report.md
+          echo "## Test Output" >> test_report.md
+          echo "\`\`\`" >> test_report.md
+          if [ -f "test_results.log" ]; then
+            cat test_results.log >> test_report.md
+          else
+            echo "No test output available" >> test_results.log
+          fi
+          echo "\`\`\`" >> test_report.md
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosmos-test-results-${{ github.run_number }}
+          path: |
+            test_results.log
+            test_report.md
+          retention-days: 30
+
+      - name: Add Results to Job Summary
+        if: always()
+        run: |
+          echo "## 🧪 Azure Cosmos DB Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.cosmos_test.outputs.test_status }}" == "success" ]; then
+            echo "✅ **Test Status**: PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 Azure Cosmos DB connection and operations are working correctly!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Test Status**: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️  There are issues with the Azure Cosmos DB integration." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration Used" >> $GITHUB_STEP_SUMMARY
+          echo "- **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "test_results.log" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Test Output Preview" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            head -20 test_results.log >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    name: Notify Test Results
+    needs: test-cosmos
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'push'
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Notify Success
+        if: needs.test-cosmos.result == 'success'
+        run: |
+          echo "✅ Azure Cosmos DB integration tests passed successfully!"
+          echo "The deployment pipeline can proceed with confidence."
 
-    - name: Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-
-    - name: Install Python dependencies
-      run: |
-        pip install azure-cosmos python-dotenv requests
-
-    - name: Validate Cosmos DB Configuration
-      run: |
-        echo "Validating Cosmos DB configuration..."
-        
-        if [ -z "$AZURE_COSMOSDB_ENDPOINT" ]; then
-          echo "❌ AZURE_COSMOSDB_ENDPOINT is not set"
-          exit 1
-        fi
-        
-        if [ -z "$AZURE_COSMOSDB_KEY" ]; then
-          echo "❌ AZURE_COSMOSDB_KEY is not set"
-          exit 1
-        fi
-        
-        if [ -z "$AZURE_COSMOSDB_DATABASE_NAME" ]; then
-          echo "❌ AZURE_COSMOSDB_DATABASE_NAME is not set"
-          exit 1
-        fi
-        
-        if [ -z "$AZURE_COSMOSDB_CONTAINER_NAME" ]; then
-          echo "❌ AZURE_COSMOSDB_CONTAINER_NAME is not set"
-          exit 1
-        fi
-        
-        if [[ ! "$AZURE_COSMOSDB_ENDPOINT" =~ ^https://.*\.documents\.azure\.com:443/?$ ]]; then
-          echo "❌ AZURE_COSMOSDB_ENDPOINT format is incorrect"
-          echo "Expected format: https://account-name.documents.azure.com:443/"
-          exit 1
-        fi
-        
-        echo "✅ Cosmos DB configuration validated"
-
-    - name: Create Test Database and Container
-      run: |
-        echo "Creating test database and container..."
-        python -c "
-        from azure.cosmos import CosmosClient
-        import os
-        
-        client = CosmosClient(os.environ['AZURE_COSMOSDB_ENDPOINT'], os.environ['AZURE_COSMOSDB_KEY'])
-        
-        # Create test database
-        database = client.create_database_if_not_exists(
-            id=os.environ['TEST_DATABASE_NAME'],
-            offer_throughput=400
-        )
-        print(f'✅ Database created: {database.id}')
-        
-        # Create test container
-        container = database.create_container_if_not_exists(
-            id=os.environ['TEST_CONTAINER_NAME'],
-            partition_key={'paths': ['/pen'], 'kind': 'Hash'}
-        )
-        print(f'✅ Container created: {container.id}')
-        "
-
-    - name: Run Cosmos DB Tests
-      run: |
-        python tests/cosmos.py
-      env:
-        TEST_DATA_COUNT: ${{ github.event.inputs.test_data_count || '10' }}
-
-    - name: Cleanup Test Environment
-      if: always()
-      run: |
-        echo "Cleaning up test environment..."
-        python -c "
-        from azure.cosmos import CosmosClient
-        import os
-        
-        try:
-            client = CosmosClient(os.environ['AZURE_COSMOSDB_ENDPOINT'], os.environ['AZURE_COSMOSDB_KEY'])
-            database = client.get_database_client(os.environ['TEST_DATABASE_NAME'])
-            
-            # Delete test container
-            container = database.get_container_client(os.environ['TEST_CONTAINER_NAME'])
-            container.delete_container()
-            print('✅ Test container deleted')
-            
-            # Delete test database
-            database.delete_database()
-            print('✅ Test database deleted')
-            
-        except Exception as e:
-            print(f'⚠️ Cleanup completed with warnings: {e}')
-        "
+      - name: Notify Failure
+        if: needs.test-cosmos.result == 'failure'
+        run: |
+          echo "❌ Azure Cosmos DB integration tests failed!"
+          echo "Please review the test results before proceeding with deployment."
+          echo "Check the test artifacts for detailed logs."

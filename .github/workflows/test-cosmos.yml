@@ -38,10 +38,13 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       
-      # Cosmos DB Configuration
-      AZURE_COSMOSDB_ENDPOINT: ${{ vars.AZURE_COSMOSDB_ENDPOINT }}
-      AZURE_COSMOSDB_DATABASE_NAME: ${{ github.event.inputs.database_name || 'testDatabase' }}
-      AZURE_COSMOSDB_CONTAINER_NAME: 'testContainer'
+      # Cosmos DB Configuration - Use secrets instead of vars
+      AZURE_COSMOSDB_ENDPOINT: ${{ secrets.AZURE_COSMOSDB_ENDPOINT }}
+      AZURE_COSMOSDB_DATABASE_NAME: ${{ github.event.inputs.database_name || secrets.AZURE_COSMOSDB_DATABASE_NAME || 'testDatabase' }}
+      AZURE_COSMOSDB_CONTAINER_NAME: ${{ secrets.AZURE_COSMOSDB_CONTAINER_NAME || 'testContainer' }}
+      
+      # Optional: Add Cosmos DB key if not using RBAC
+      AZURE_COSMOSDB_KEY: ${{ secrets.AZURE_COSMOSDB_KEY }}
       
       # Python environment
       PYTHONPATH: ${{ github.workspace }}
@@ -56,9 +59,9 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ env.AZURE_CLIENT_ID }}
-          tenant-id: ${{ env.AZURE_TENANT_ID }}
-          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Set up Python Environment
         uses: actions/setup-python@v5
@@ -103,9 +106,21 @@ jobs:
         run: |
           echo "🔐 Validating Azure Cosmos DB configuration..."
           
+          # Check if endpoint is provided
+          if [ -z "$AZURE_COSMOSDB_ENDPOINT" ]; then
+            echo "❌ AZURE_COSMOSDB_ENDPOINT secret is not set"
+            exit 1
+          fi
+          
           # Check endpoint format
           if [[ ! "$AZURE_COSMOSDB_ENDPOINT" =~ ^https://.*\.documents\.azure\.com.*$ ]]; then
             echo "❌ Cosmos DB endpoint format appears invalid"
+            exit 1
+          fi
+          
+          # Check if database name is provided
+          if [ -z "$AZURE_COSMOSDB_DATABASE_NAME" ]; then
+            echo "❌ AZURE_COSMOSDB_DATABASE_NAME is not set"
             exit 1
           fi
           
@@ -116,6 +131,7 @@ jobs:
         run: |
           echo "🧪 Running Cosmos DB Connection Test..."
           echo "Database: $AZURE_COSMOSDB_DATABASE_NAME"
+          echo "Container: $AZURE_COSMOSDB_CONTAINER_NAME"
           echo "Endpoint: $AZURE_COSMOSDB_ENDPOINT"
           echo "----------------------------------------"
           
@@ -148,6 +164,7 @@ jobs:
           
           ## Test Configuration
           - **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}
+          - **Container**: ${{ env.AZURE_COSMOSDB_CONTAINER_NAME }}
           - **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}
           - **Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
           - **Workflow Run**: ${{ github.run_number }}
@@ -202,6 +219,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Configuration Used" >> $GITHUB_STEP_SUMMARY
           echo "- **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Container**: ${{ env.AZURE_COSMOSDB_CONTAINER_NAME }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           

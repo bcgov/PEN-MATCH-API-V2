@@ -1,252 +1,100 @@
-name: Test Cosmos DB Integration
+name: Test Cosmos DB Connection via App Service
 
 on:
   push:
     branches: [ main, develop ]
     paths:
       - 'app/cosmos.py'
-      - 'requirements-test.txt'
       - '.github/workflows/test-cosmos.yml'
   pull_request:
     branches: [ main ]
-    paths:
-      - 'app/cosmos.py'
-      - 'requirements-test.txt'
   workflow_dispatch:
-    inputs:
-      database_name:
-        description: 'Cosmos DB database name to test'
-        required: false
-        default: 'testDatabase'
-        type: string
 
 permissions:
   id-token: write
   contents: read
-  checks: write
 
 jobs:
-  test-cosmos:
-    name: Test Azure Cosmos DB Integration
+  test-cosmos-connection:
+    name: Test Cosmos DB Connection
     runs-on: ubuntu-latest
     environment: dev
-    timeout-minutes: 15
+    timeout-minutes: 10
     
     env:
-      # Azure OIDC Configuration
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      
-      # Cosmos DB Configuration - Use secrets instead of vars
-      AZURE_COSMOSDB_ENDPOINT: ${{ secrets.AZURE_COSMOSDB_ENDPOINT }}
-      AZURE_COSMOSDB_DATABASE_NAME: ${{ github.event.inputs.database_name || secrets.AZURE_COSMOSDB_DATABASE_NAME || 'testDatabase' }}
-      AZURE_COSMOSDB_CONTAINER_NAME: ${{ secrets.AZURE_COSMOSDB_CONTAINER_NAME || 'testContainer' }}
-      
-      # Optional: Add Cosmos DB key if not using RBAC
-      AZURE_COSMOSDB_KEY: ${{ secrets.AZURE_COSMOSDB_KEY }}
-      
-      # Python environment
-      PYTHONPATH: ${{ github.workspace }}
-      PYTHONUNBUFFERED: 1
+      APP_SERVICE_NAME: ${{ secrets.APP_SERVICE_NAME }}
+      RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Azure Login (OIDC)
+      - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Set up Python Environment
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-
-      - name: Validate Environment
-        run: |
-          echo "🔍 Environment Validation"
-          echo "Python version: $(python --version)"
-          echo "Working directory: $(pwd)"
-          echo "Cosmos DB Endpoint: $AZURE_COSMOSDB_ENDPOINT"
-          echo "Database Name: $AZURE_COSMOSDB_DATABASE_NAME"
-          
-          # Check for required files
-          if [ ! -f "app/cosmos.py" ]; then
-            echo "❌ cosmos.py not found"
-            exit 1
-          fi
-          
-          echo "✅ All required files found"
 
       - name: Install Dependencies
         run: |
-          echo "📦 Installing Python dependencies..."
-          python -m pip install --upgrade pip setuptools wheel
-          
-          # Install essential packages for Cosmos DB
-          pip install azure-cosmos>=4.5.0 azure-identity>=1.15.0
-          
-          # Install test requirements if available
-          if [ -f "requirements-test.txt" ]; then
-            pip install -r requirements-test.txt
-          fi
-          
-          # Verify installations
-          echo "📋 Installed packages:"
-          pip list | grep -E "(azure-cosmos|azure-identity)"
+          pip install azure-cosmos azure-identity
 
-      - name: Validate Azure Cosmos DB Configuration
+      - name: Prepare Deployment Package
         run: |
-          echo "🔐 Validating Azure Cosmos DB configuration..."
+          echo "📦 Preparing cosmos test package..."
+          mkdir -p deployment
+          cp app/cosmos.py deployment/
+          echo "azure-cosmos>=4.5.0" > deployment/requirements.txt
+          echo "azure-identity>=1.15.0" >> deployment/requirements.txt
+          echo "python cosmos.py" > deployment/startup.txt
+
+      - name: Deploy Test to App Service
+        run: |
+          echo "🚀 Deploying cosmos test to App Service..."
+          cd deployment
+          zip -r ../deployment.zip .
+          cd ..
           
-          # Check if endpoint is provided
-          if [ -z "$AZURE_COSMOSDB_ENDPOINT" ]; then
-            echo "❌ AZURE_COSMOSDB_ENDPOINT secret is not set"
+          az webapp deployment source config-zip \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME \
+            --src deployment.zip
+
+      - name: Configure App Service Environment
+        run: |
+          echo "⚙️ Setting Cosmos DB environment variables..."
+          az webapp config appsettings set \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME \
+            --settings \
+              AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true
+
+      - name: Run Cosmos DB Test
+        run: |
+          echo "🧪 Running Cosmos DB connection test..."
+          sleep 30  # Wait for deployment
+          
+          # Execute the test on App Service
+          RESULT=$(az webapp ssh --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME \
+            --command "cd /home/site/wwwroot && python cosmos.py" 2>&1)
+          
+          echo "Test Result:"
+          echo "$RESULT"
+          
+          if [[ "$RESULT" == *"✅ Connected!"* ]]; then
+            echo "✅ Cosmos DB connection test PASSED"
+          else
+            echo "❌ Cosmos DB connection test FAILED"
             exit 1
           fi
-          
-          # Check endpoint format
-          if [[ ! "$AZURE_COSMOSDB_ENDPOINT" =~ ^https://.*\.documents\.azure\.com.*$ ]]; then
-            echo "❌ Cosmos DB endpoint format appears invalid"
-            exit 1
-          fi
-          
-          # Check if database name is provided
-          if [ -z "$AZURE_COSMOSDB_DATABASE_NAME" ]; then
-            echo "❌ AZURE_COSMOSDB_DATABASE_NAME is not set"
-            exit 1
-          fi
-          
-          echo "✅ Configuration validation passed"
-
-      - name: Run Cosmos DB Connection Test
-        id: cosmos_test
-        run: |
-          echo "🧪 Running Cosmos DB Connection Test..."
-          echo "Database: $AZURE_COSMOSDB_DATABASE_NAME"
-          echo "Container: $AZURE_COSMOSDB_CONTAINER_NAME"
-          echo "Endpoint: $AZURE_COSMOSDB_ENDPOINT"
-          echo "----------------------------------------"
-          
-          # Run the test script with timeout
-          timeout 300s python app/cosmos.py > test_results.log 2>&1
-          TEST_EXIT_CODE=$?
-          
-          echo "Test exit code: $TEST_EXIT_CODE"
-          
-          # Display results
-          echo "📊 Test Output:"
-          cat test_results.log
-          
-          if [ $TEST_EXIT_CODE -eq 0 ]; then
-            echo "test_status=success" >> $GITHUB_OUTPUT
-            echo "✅ Cosmos DB test completed successfully"
-          else
-            echo "test_status=failure" >> $GITHUB_OUTPUT
-            echo "❌ Cosmos DB test failed"
-            exit 1
-          fi
-
-      - name: Generate Test Report
-        if: always()
-        run: |
-          echo "📝 Generating test report..."
-          
-          cat > test_report.md << 'EOF'
-          # Azure Cosmos DB Integration Test Report
-          
-          ## Test Configuration
-          - **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}
-          - **Container**: ${{ env.AZURE_COSMOSDB_CONTAINER_NAME }}
-          - **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}
-          - **Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          - **Workflow Run**: ${{ github.run_number }}
-          
-          ## Test Results
-          EOF
-          
-          if [ "${{ steps.cosmos_test.outputs.test_status }}" == "success" ]; then
-            echo "✅ **Status**: PASSED" >> test_report.md
-            echo "" >> test_report.md
-            echo "The Azure Cosmos DB integration test completed successfully. Connection and basic operations are working correctly." >> test_report.md
-          else
-            echo "❌ **Status**: FAILED" >> test_report.md
-            echo "" >> test_report.md
-            echo "The Azure Cosmos DB integration test failed. Please check the logs for details." >> test_report.md
-          fi
-          
-          echo "" >> test_report.md
-          echo "## Test Output" >> test_report.md
-          echo "\`\`\`" >> test_report.md
-          if [ -f "test_results.log" ]; then
-            cat test_results.log >> test_report.md
-          else
-            echo "No test output available" >> test_results.log
-          fi
-          echo "\`\`\`" >> test_report.md
-
-      - name: Upload Test Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cosmos-test-results-${{ github.run_number }}
-          path: |
-            test_results.log
-            test_report.md
-          retention-days: 30
-
-      - name: Add Results to Job Summary
-        if: always()
-        run: |
-          echo "## 🧪 Azure Cosmos DB Test Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.cosmos_test.outputs.test_status }}" == "success" ]; then
-            echo "✅ **Test Status**: PASSED" >> $GITHUB_STEP_SUMMARY
-            echo "🎉 Azure Cosmos DB connection and operations are working correctly!" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Test Status**: FAILED" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️  There are issues with the Azure Cosmos DB integration." >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Configuration Used" >> $GITHUB_STEP_SUMMARY
-          echo "- **Database**: ${{ env.AZURE_COSMOSDB_DATABASE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Container**: ${{ env.AZURE_COSMOSDB_CONTAINER_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Endpoint**: ${{ env.AZURE_COSMOSDB_ENDPOINT }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "test_results.log" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Test Output Preview" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            head -20 test_results.log >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          fi
-
-  notify:
-    name: Notify Test Results
-    needs: test-cosmos
-    runs-on: ubuntu-latest
-    if: always() && github.event_name == 'push'
-    
-    steps:
-      - name: Notify Success
-        if: needs.test-cosmos.result == 'success'
-        run: |
-          echo "✅ Azure Cosmos DB integration tests passed successfully!"
-          echo "The deployment pipeline can proceed with confidence."
-
-      - name: Notify Failure
-        if: needs.test-cosmos.result == 'failure'
-        run: |
-          echo "❌ Azure Cosmos DB integration tests failed!"
-          echo "Please review the test results before proceeding with deployment."
-          echo "Check the test artifacts for detailed logs."

@@ -16,7 +16,7 @@ jobs:
     
     env:
       AZURE_WEBAPP_NAME: 'pen-match-api-v2-app'
-      AZURE_WEBAPP_PACKAGE_PATH: '.'
+      RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
 
     steps:
       - name: Checkout
@@ -31,38 +31,75 @@ jobs:
 
       - name: Configure App Service for Cosmos Test
         run: |
-          echo "⚙️ Setting environment variables..."
+          echo "⚙️ Setting Cosmos DB environment variables..."
           az webapp config appsettings set \
-            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME \
             --settings \
               AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}"
 
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          package: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}
-
-      - name: Test Cosmos DB via App Service Logs
+      - name: Trigger App Service Deployment
         run: |
-          echo "⏳ Waiting for deployment..."
-          sleep 60
+          echo "🚀 Triggering App Service deployment from GitHub..."
           
-          echo "🧪 Testing Cosmos DB connection..."
+          # Sync deployment (pulls latest from main branch)
+          az webapp deployment source sync \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME
           
-          # Run cosmos test via Azure CLI
-          az webapp ssh \
-            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
-            --command "cd /home/site/wwwroot && python app/cosmos.py" \
-          || echo "SSH not available, checking logs..."
+          echo "✅ Deployment triggered"
+
+      - name: Wait for Deployment to Complete
+        run: |
+          echo "⏳ Waiting for deployment to complete..."
+          sleep 90
           
-          # Alternative: Check logs
-          az webapp log tail \
-            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
-            --name ${{ env.AZURE_WEBAPP_NAME }} \
-            --timeout 30
+          # Check deployment status
+          az webapp deployment list \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME \
+            --query "[0].{status:status,author:author,message:message}" \
+            --output table
+
+      - name: Test Cosmos DB Connection
+        run: |
+          echo "🧪 Testing Cosmos DB connection via SSH..."
+          
+          # Try SSH first
+          SSH_RESULT=$(az webapp ssh \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME \
+            --command "cd /home/site/wwwroot && python app/cosmos.py" 2>&1 || echo "SSH_FAILED")
+          
+          echo "SSH Result: $SSH_RESULT"
+          
+          if [[ "$SSH_RESULT" == *"✅ Connected!"* ]]; then
+            echo "✅ COSMOS DB CONNECTION TEST PASSED via SSH"
+          elif [[ "$SSH_RESULT" == "SSH_FAILED" ]]; then
+            echo "SSH not available, checking application logs..."
+            
+            # Fallback to logs
+            echo "📋 Checking application logs..."
+            LOGS=$(az webapp log tail \
+              --resource-group $RESOURCE_GROUP_NAME \
+              --name $AZURE_WEBAPP_NAME \
+              --timeout 60 2>&1 || echo "LOG_FAILED")
+            
+            echo "=== APP LOGS ==="
+            echo "$LOGS"
+            echo "================"
+            
+            if echo "$LOGS" | grep -q "✅ Connected!"; then
+              echo "✅ COSMOS DB CONNECTION TEST PASSED via logs"
+            else
+              echo "❌ COSMOS DB CONNECTION TEST FAILED"
+              exit 1
+            fi
+          else
+            echo "❌ COSMOS DB CONNECTION TEST FAILED"
+            echo "SSH Error: $SSH_RESULT"
+            exit 1
+          fi
 
       - name: Azure Logout
         run: az logout

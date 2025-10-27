@@ -39,50 +39,51 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Prepare Deployment Package
+      - name: Prepare Test App
         run: |
-          echo "📦 Preparing cosmos test package..."
+          echo "📦 Preparing cosmos test app..."
           mkdir -p deployment
           cp app/cosmos.py deployment/
           
-          # Create requirements.txt
-          cat > deployment/requirements.txt << EOF
-          azure-cosmos>=4.5.0
-          azure-identity>=1.15.0
-          flask>=2.3.0
-          EOF
+          # Simple requirements
+          echo "azure-cosmos>=4.5.0" > deployment/requirements.txt
+          echo "azure-identity>=1.15.0" >> deployment/requirements.txt
           
-          # Create simple Flask app for health check
-          cat > deployment/app.py << 'EOF'
+          # Simple startup script that runs cosmos.py and prints result
+          cat > deployment/run_test.py << 'EOF'
+          import sys
+          import logging
           from cosmos import test_connection
-          from flask import Flask
           
-          app = Flask(__name__)
+          # Configure logging so we can see output in App Service logs
+          logging.basicConfig(level=logging.INFO, format='%(message)s')
+          logger = logging.getLogger(__name__)
           
-          @app.route('/')
-          @app.route('/health')
-          def health():
-              return test_connection()
-          
-          if __name__ == "__main__":
-              app.run(host='0.0.0.0', port=8000)
+          logger.info("=== COSMOS DB CONNECTION TEST START ===")
+          try:
+              result = test_connection()
+              logger.info(f"TEST RESULT: {result}")
+              logger.info("=== COSMOS DB CONNECTION TEST END ===")
+          except Exception as e:
+              logger.error(f"TEST FAILED: {str(e)}")
+              logger.info("=== COSMOS DB CONNECTION TEST END ===")
           EOF
 
       - name: Configure App Service Environment
         run: |
-          echo "⚙️ Setting Cosmos DB environment variables..."
+          echo "⚙️ Setting environment variables..."
           az webapp config appsettings set \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $APP_SERVICE_NAME \
             --settings \
               AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}" \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-              ENABLE_ORYX_BUILD=true
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true
+          
+          # Set startup command to run our test
+          az webapp config set \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME \
+            --startup-file "python run_test.py"
 
       - name: Deploy to App Service
         uses: azure/webapps-deploy@v2
@@ -90,63 +91,33 @@ jobs:
           app-name: ${{ secrets.APP_SERVICE_NAME }}
           package: './deployment'
 
-      - name: Wait for App Service Startup
+      - name: Wait and Check Test Results in Logs
         run: |
-          echo "⏳ Waiting for App Service to start..."
-          sleep 45
+          echo "⏳ Waiting for app deployment and test execution..."
+          sleep 60
           
-          # Get App Service URL
-          APP_URL=$(az webapp show \
+          echo "📋 Checking App Service logs for test results..."
+          
+          # Get logs and look for our test results
+          LOGS=$(az webapp log tail \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $APP_SERVICE_NAME \
-            --query "defaultHostName" -o tsv)
+            --timeout 60 2>&1 || echo "")
           
-          echo "APP_URL=https://$APP_URL" >> $GITHUB_ENV
-          echo "🌐 App Service URL: https://$APP_URL"
-
-      - name: Test Cosmos DB Connection
-        run: |
-          echo "🧪 Testing Cosmos DB connection via HTTP endpoint..."
+          echo "=== APP SERVICE LOGS ==="
+          echo "$LOGS"
+          echo "========================"
           
-          # Test the health endpoint
-          echo "Testing: $APP_URL/health"
-          
-          # Retry logic for connection test
-          for i in {1..5}; do
-            echo "Attempt $i/5..."
-            RESPONSE=$(curl -s -w "%{http_code}" "$APP_URL/health" || echo "000")
-            HTTP_CODE=$(echo "$RESPONSE" | tail -c 4)
-            BODY=$(echo "$RESPONSE" | head -c -4)
-            
-            echo "HTTP Status: $HTTP_CODE"
-            echo "Response: $BODY"
-            
-            if [ "$HTTP_CODE" = "200" ] && [[ "$BODY" == *"✅ Connected!"* ]]; then
-              echo "✅ Cosmos DB connection test PASSED"
-              exit 0
-            fi
-            
-            if [ $i -lt 5 ]; then
-              echo "⏳ Waiting 30s before retry..."
-              sleep 30
-            fi
-          done
-          
-          echo "❌ Cosmos DB connection test FAILED after 5 attempts"
-          exit 1
-
-      - name: Get App Service Logs (if failed)
-        if: failure()
-        run: |
-          echo "📋 Getting App Service logs for debugging..."
-          
-          # Get recent logs
-          az webapp log tail \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME \
-            --timeout 30 || true
-          
-          # Also try to get deployment logs
-          az webapp log deployment show \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME || true
+          # Check if test passed
+          if echo "$LOGS" | grep -q "✅ Connected!"; then
+            echo "✅ COSMOS DB CONNECTION TEST PASSED"
+            echo "App Service successfully connected to Cosmos DB via private endpoint!"
+          elif echo "$LOGS" | grep -q "❌ Failed:"; then
+            echo "❌ COSMOS DB CONNECTION TEST FAILED"
+            echo "Check the error message in logs above"
+            exit 1
+          else
+            echo "⚠️ Could not determine test result from logs"
+            echo "The app may still be starting or there's a logging issue"
+            exit 1
+          fi

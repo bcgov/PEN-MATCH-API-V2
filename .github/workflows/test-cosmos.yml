@@ -44,30 +44,34 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
-        run: |
-          pip install azure-cosmos azure-identity
-
       - name: Prepare Deployment Package
         run: |
           echo "📦 Preparing cosmos test package..."
           mkdir -p deployment
           cp app/cosmos.py deployment/
-          echo "azure-cosmos>=4.5.0" > deployment/requirements.txt
-          echo "azure-identity>=1.15.0" >> deployment/requirements.txt
-          echo "python cosmos.py" > deployment/startup.txt
-
-      - name: Deploy Test to App Service
-        run: |
-          echo "🚀 Deploying cosmos test to App Service..."
-          cd deployment
-          zip -r ../deployment.zip .
-          cd ..
           
-          az webapp deployment source config-zip \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME \
-            --src deployment.zip
+          # Create requirements.txt
+          cat > deployment/requirements.txt << EOF
+          azure-cosmos>=4.5.0
+          azure-identity>=1.15.0
+          flask>=2.3.0
+          EOF
+          
+          # Create simple Flask app for health check
+          cat > deployment/app.py << 'EOF'
+          from cosmos import test_connection
+          from flask import Flask
+          
+          app = Flask(__name__)
+          
+          @app.route('/')
+          @app.route('/health')
+          def health():
+              return test_connection()
+          
+          if __name__ == "__main__":
+              app.run(host='0.0.0.0', port=8000)
+          EOF
 
       - name: Configure App Service Environment
         run: |
@@ -77,24 +81,72 @@ jobs:
             --name $APP_SERVICE_NAME \
             --settings \
               AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}" \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=true
+              SCM_DO_BUILD_DURING_DEPLOYMENT=true \
+              ENABLE_ORYX_BUILD=true
 
-      - name: Run Cosmos DB Test
+      - name: Deploy to App Service
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: ${{ secrets.APP_SERVICE_NAME }}
+          package: './deployment'
+
+      - name: Wait for App Service Startup
         run: |
-          echo "🧪 Running Cosmos DB connection test..."
-          sleep 30  # Wait for deployment
+          echo "⏳ Waiting for App Service to start..."
+          sleep 45
           
-          # Execute the test on App Service
-          RESULT=$(az webapp ssh --resource-group $RESOURCE_GROUP_NAME \
+          # Get App Service URL
+          APP_URL=$(az webapp show \
+            --resource-group $RESOURCE_GROUP_NAME \
             --name $APP_SERVICE_NAME \
-            --command "cd /home/site/wwwroot && python cosmos.py" 2>&1)
+            --query "defaultHostName" -o tsv)
           
-          echo "Test Result:"
-          echo "$RESULT"
+          echo "APP_URL=https://$APP_URL" >> $GITHUB_ENV
+          echo "🌐 App Service URL: https://$APP_URL"
+
+      - name: Test Cosmos DB Connection
+        run: |
+          echo "🧪 Testing Cosmos DB connection via HTTP endpoint..."
           
-          if [[ "$RESULT" == *"✅ Connected!"* ]]; then
-            echo "✅ Cosmos DB connection test PASSED"
-          else
-            echo "❌ Cosmos DB connection test FAILED"
-            exit 1
-          fi
+          # Test the health endpoint
+          echo "Testing: $APP_URL/health"
+          
+          # Retry logic for connection test
+          for i in {1..5}; do
+            echo "Attempt $i/5..."
+            RESPONSE=$(curl -s -w "%{http_code}" "$APP_URL/health" || echo "000")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -c 4)
+            BODY=$(echo "$RESPONSE" | head -c -4)
+            
+            echo "HTTP Status: $HTTP_CODE"
+            echo "Response: $BODY"
+            
+            if [ "$HTTP_CODE" = "200" ] && [[ "$BODY" == *"✅ Connected!"* ]]; then
+              echo "✅ Cosmos DB connection test PASSED"
+              exit 0
+            fi
+            
+            if [ $i -lt 5 ]; then
+              echo "⏳ Waiting 30s before retry..."
+              sleep 30
+            fi
+          done
+          
+          echo "❌ Cosmos DB connection test FAILED after 5 attempts"
+          exit 1
+
+      - name: Get App Service Logs (if failed)
+        if: failure()
+        run: |
+          echo "📋 Getting App Service logs for debugging..."
+          
+          # Get recent logs
+          az webapp log tail \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME \
+            --timeout 30 || true
+          
+          # Also try to get deployment logs
+          az webapp log deployment show \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $APP_SERVICE_NAME || true

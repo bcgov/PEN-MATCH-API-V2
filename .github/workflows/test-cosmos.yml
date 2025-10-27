@@ -41,64 +41,51 @@ jobs:
       - name: Trigger App Service Deployment
         run: |
           echo "🚀 Triggering App Service deployment from GitHub..."
-          
-          # Sync deployment (pulls latest from main branch)
           az webapp deployment source sync \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME
-          
           echo "✅ Deployment triggered"
 
-      - name: Wait for Deployment to Complete
+      - name: Wait for Deployment
         run: |
           echo "⏳ Waiting for deployment to complete..."
           sleep 90
-          
-          # Check deployment status using correct command
-          echo "📋 Checking deployment status..."
-          az webapp deployment log list \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $AZURE_WEBAPP_NAME \
-            --query "[0].{status:status,startTime:startTime,endTime:endTime}" \
-            --output table || echo "No deployment logs available"
 
-      - name: Test Cosmos DB Connection
+      - name: Test Cosmos DB Connection via Logs
         run: |
-          echo "🧪 Testing Cosmos DB connection via SSH..."
+          echo "🧪 Testing Cosmos DB connection via application logs..."
           
-          # Try SSH first
-          SSH_RESULT=$(az webapp ssh \
+          # Restart app to trigger cosmos.py execution
+          echo "🔄 Restarting app to run cosmos test..."
+          az webapp restart \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME
+          
+          # Wait for restart
+          sleep 30
+          
+          # Check application logs for cosmos connection result
+          echo "📋 Checking application logs for test results..."
+          LOGS=$(az webapp log tail \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME \
-            --command "cd /home/site/wwwroot && python app/cosmos.py" 2>&1 || echo "SSH_FAILED")
+            --timeout 60 2>&1 || echo "LOG_FAILED")
           
-          echo "SSH Result: $SSH_RESULT"
+          echo "=== APPLICATION LOGS ==="
+          echo "$LOGS"
+          echo "========================"
           
-          if [[ "$SSH_RESULT" == *"✅ Connected!"* ]]; then
-            echo "✅ COSMOS DB CONNECTION TEST PASSED via SSH"
-          elif [[ "$SSH_RESULT" == "SSH_FAILED" ]]; then
-            echo "SSH not available, checking application logs..."
-            
-            # Fallback to logs
-            echo "📋 Checking application logs..."
-            LOGS=$(az webapp log tail \
-              --resource-group $RESOURCE_GROUP_NAME \
-              --name $AZURE_WEBAPP_NAME \
-              --timeout 60 2>&1 || echo "LOG_FAILED")
-            
-            echo "=== APP LOGS ==="
-            echo "$LOGS"
-            echo "================"
-            
-            if echo "$LOGS" | grep -q "✅ Connected!"; then
-              echo "✅ COSMOS DB CONNECTION TEST PASSED via logs"
-            else
-              echo "❌ COSMOS DB CONNECTION TEST FAILED"
-              exit 1
-            fi
-          else
+          # Check if test passed
+          if echo "$LOGS" | grep -q "✅ Connected!"; then
+            echo "✅ COSMOS DB CONNECTION TEST PASSED"
+            echo "App Service successfully connected to Cosmos DB via private endpoint!"
+          elif echo "$LOGS" | grep -q "❌ Failed:"; then
             echo "❌ COSMOS DB CONNECTION TEST FAILED"
-            echo "SSH Error: $SSH_RESULT"
+            echo "Error details in logs above"
+            exit 1
+          else
+            echo "⚠️ Could not determine test result from logs"
+            echo "The app may not have executed cosmos.py or logs are not available"
             exit 1
           fi
 

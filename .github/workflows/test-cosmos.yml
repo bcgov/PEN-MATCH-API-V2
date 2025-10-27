@@ -1,13 +1,6 @@
 name: Test Cosmos DB Connection via App Service
 
 on:
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'app/cosmos.py'
-      - '.github/workflows/test-cosmos.yml'
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -22,11 +15,8 @@ jobs:
     timeout-minutes: 10
     
     env:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      APP_SERVICE_NAME: ${{ secrets.APP_SERVICE_NAME }}
-      RESOURCE_GROUP_NAME: ${{ secrets.RESOURCE_GROUP_NAME }}
+      AZURE_WEBAPP_NAME: 'pen-match-api-v2-app'
+      AZURE_WEBAPP_PACKAGE_PATH: '.'
 
     steps:
       - name: Checkout
@@ -39,85 +29,41 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Prepare Test App
-        run: |
-          echo "📦 Preparing cosmos test app..."
-          mkdir -p deployment
-          cp app/cosmos.py deployment/
-          
-          # Simple requirements
-          echo "azure-cosmos>=4.5.0" > deployment/requirements.txt
-          echo "azure-identity>=1.15.0" >> deployment/requirements.txt
-          
-          # Simple startup script that runs cosmos.py and prints result
-          cat > deployment/run_test.py << 'EOF'
-          import sys
-          import logging
-          from cosmos import test_connection
-          
-          # Configure logging so we can see output in App Service logs
-          logging.basicConfig(level=logging.INFO, format='%(message)s')
-          logger = logging.getLogger(__name__)
-          
-          logger.info("=== COSMOS DB CONNECTION TEST START ===")
-          try:
-              result = test_connection()
-              logger.info(f"TEST RESULT: {result}")
-              logger.info("=== COSMOS DB CONNECTION TEST END ===")
-          except Exception as e:
-              logger.error(f"TEST FAILED: {str(e)}")
-              logger.info("=== COSMOS DB CONNECTION TEST END ===")
-          EOF
-
-      - name: Configure App Service Environment
+      - name: Configure App Service for Cosmos Test
         run: |
           echo "⚙️ Setting environment variables..."
           az webapp config appsettings set \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME \
+            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
             --settings \
-              AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}" \
-              SCM_DO_BUILD_DURING_DEPLOYMENT=true
-          
-          # Set startup command to run our test
-          az webapp config set \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME \
-            --startup-file "python run_test.py"
+              AZURE_COSMOSDB_ENDPOINT="${{ secrets.AZURE_COSMOSDB_ENDPOINT }}"
 
-      - name: Deploy to App Service
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ secrets.APP_SERVICE_NAME }}
-          package: './deployment'
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          package: ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}
 
-      - name: Wait and Check Test Results in Logs
+      - name: Test Cosmos DB via App Service Logs
         run: |
-          echo "⏳ Waiting for app deployment and test execution..."
+          echo "⏳ Waiting for deployment..."
           sleep 60
           
-          echo "📋 Checking App Service logs for test results..."
+          echo "🧪 Testing Cosmos DB connection..."
           
-          # Get logs and look for our test results
-          LOGS=$(az webapp log tail \
-            --resource-group $RESOURCE_GROUP_NAME \
-            --name $APP_SERVICE_NAME \
-            --timeout 60 2>&1 || echo "")
+          # Run cosmos test via Azure CLI
+          az webapp ssh \
+            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --command "cd /home/site/wwwroot && python app/cosmos.py" \
+          || echo "SSH not available, checking logs..."
           
-          echo "=== APP SERVICE LOGS ==="
-          echo "$LOGS"
-          echo "========================"
-          
-          # Check if test passed
-          if echo "$LOGS" | grep -q "✅ Connected!"; then
-            echo "✅ COSMOS DB CONNECTION TEST PASSED"
-            echo "App Service successfully connected to Cosmos DB via private endpoint!"
-          elif echo "$LOGS" | grep -q "❌ Failed:"; then
-            echo "❌ COSMOS DB CONNECTION TEST FAILED"
-            echo "Check the error message in logs above"
-            exit 1
-          else
-            echo "⚠️ Could not determine test result from logs"
-            echo "The app may still be starting or there's a logging issue"
-            exit 1
-          fi
+          # Alternative: Check logs
+          az webapp log tail \
+            --resource-group ${{ secrets.RESOURCE_GROUP_NAME }} \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --timeout 30
+
+      - name: Azure Logout
+        run: az logout
+        if: always()

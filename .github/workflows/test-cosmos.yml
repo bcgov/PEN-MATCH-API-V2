@@ -54,12 +54,13 @@ jobs:
           echo "⏳ Waiting for deployment to complete..."
           sleep 90
           
-          # Check deployment status
-          az webapp deployment list \
+          # Check deployment status using correct command
+          echo "📋 Checking deployment status..."
+          az webapp deployment log list \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME \
-            --query "[0].{status:status,author:author,message:message}" \
-            --output table
+            --query "[0].{status:status,startTime:startTime,endTime:endTime}" \
+            --output table || echo "No deployment logs available"
 
       - name: Test Cosmos DB Connection
         run: |

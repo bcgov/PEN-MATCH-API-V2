@@ -64,12 +64,11 @@ jobs:
           # Wait for restart
           sleep 30
           
-          # Check application logs for cosmos connection result
+          # Check application logs for cosmos connection result (FIXED COMMAND)
           echo "📋 Checking application logs for test results..."
-          LOGS=$(az webapp log tail \
+          LOGS=$(timeout 60s az webapp log tail \
             --resource-group $RESOURCE_GROUP_NAME \
-            --name $AZURE_WEBAPP_NAME \
-            --timeout 60 2>&1 || echo "LOG_FAILED")
+            --name $AZURE_WEBAPP_NAME 2>&1 || echo "LOG_FAILED")
           
           echo "=== APPLICATION LOGS ==="
           echo "$LOGS"
@@ -86,6 +85,21 @@ jobs:
           else
             echo "⚠️ Could not determine test result from logs"
             echo "The app may not have executed cosmos.py or logs are not available"
+            
+            # Try alternative log method
+            echo "🔍 Trying alternative log download method..."
+            az webapp log download \
+              --resource-group $RESOURCE_GROUP_NAME \
+              --name $AZURE_WEBAPP_NAME \
+              --log-file app-logs.zip || echo "Log download failed"
+            
+            if [ -f "app-logs.zip" ]; then
+              unzip -q app-logs.zip
+              echo "=== DOWNLOADED LOG CONTENTS ==="
+              find . -name "*.log" -exec cat {} \; | tail -50
+              echo "==============================="
+            fi
+            
             exit 1
           fi
 

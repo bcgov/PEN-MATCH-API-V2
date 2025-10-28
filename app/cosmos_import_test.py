@@ -21,7 +21,7 @@ sample_document = {
 def insert_document():
     endpoint = "https://pen-match-api-v2-cosmos.documents.azure.com:443/"
     database_name = "PenMatchDB"
-    container_name = "StudentAPITest"  # e.g., "Students"
+    container_name = "StudentAPITest"
     credential = DefaultAzureCredential()
 
     try:
@@ -32,13 +32,29 @@ def insert_document():
         # Insert the document
         container.upsert_item(sample_document)
         logger.info("✅ Document inserted successfully.")
-        return "✅ Document inserted successfully."
+        return container
     except Exception as e:
         logger.error(f"❌ Failed to insert document: {str(e)}")
-        return f"❌ Failed to insert document: {str(e)}"
+        return None
+
+def query_documents(container):
+    try:
+        query = "SELECT * FROM c WHERE c.pen = 350355"
+        items = list(container.query_items(query=query, enable_cross_partition_query=True))
+        logger.info(f"✅ Retrieved {len(items)} documents with pen = 350355")
+        for item in items:
+            print(item)
+        return items
+    except Exception as e:
+        logger.error(f"❌ Failed to query documents: {str(e)}")
+        return []
 
 if __name__ == "__main__":
     logger.info("=== COSMOS DB INSERT TEST START ===")
-    result = insert_document()
-    print(result)
+    container = insert_document()
     logger.info("=== COSMOS DB INSERT TEST END ===")
+
+    if container:
+        logger.info("=== COSMOS DB QUERY TEST START ===")
+        query_documents(container)
+        logger.info("=== COSMOS DB QUERY TEST END ===")

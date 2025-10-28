@@ -1,6 +1,9 @@
 name: Test Cosmos DB Connection via App Service
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -31,7 +34,6 @@ jobs:
 
       - name: Configure App Service for Cosmos Test
         run: |
-          echo "⚙️ Setting Cosmos DB environment variables..."
           az webapp config appsettings set \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME \
@@ -40,57 +42,48 @@ jobs:
 
       - name: Trigger App Service Deployment
         run: |
-          echo "🚀 Triggering App Service deployment from GitHub..."
           az webapp deployment source sync \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME
-          echo "✅ Deployment triggered"
 
       - name: Set Startup Command for Testing
         run: |
-          echo "⚙️ Setting startup command to run cosmos test..."
           az webapp config set \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME \
             --startup-file "python app/cosmos.py"
-          echo "✅ Startup command set to: python app/cosmos.py"
 
       - name: Wait for Deployment
-        run: |
-          echo "⏳ Waiting for deployment to complete..."
-          sleep 90
+        run: sleep 90
 
       - name: Restart and Test
         run: |
-          echo "🔄 Restarting app to run cosmos test..."
           az webapp restart \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME
-          
-          echo "⏳ Waiting for app startup and cosmos test execution..."
           sleep 60
-          
-          echo "✅ Cosmos DB test has been triggered!"
-          echo ""
-          echo "📋 TO CHECK TEST RESULTS:"
-          echo "1. Go to Azure Portal → App Services → $AZURE_WEBAPP_NAME"
-          echo "2. Navigate to Monitoring → Log stream"
-          echo "3. Look for cosmos.py output:"
-          echo "   - '=== COSMOS DB CONNECTION TEST START ==='"
-          echo "   - '✅ Connected! Found X databases' (SUCCESS)"
-          echo "   - '❌ Failed: error message' (FAILURE)"
 
-      - name: Restore Original Startup Command (Optional)
+      - name: Get Application Logs
         run: |
-          echo "🔧 Restoring original startup command..."
-          # Change this to your normal app startup command
+          az webapp log tail \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME \
+            --provider application
+
+      - name: Get All Logs (Alternative)
+        run: |
+          az webapp log download \
+            --resource-group $RESOURCE_GROUP_NAME \
+            --name $AZURE_WEBAPP_NAME \
+            --log-file cosmos-test-logs.zip
+          unzip -l cosmos-test-logs.zip
+
+      - name: Restore Original Startup Command
+        run: |
           az webapp config set \
             --resource-group $RESOURCE_GROUP_NAME \
             --name $AZURE_WEBAPP_NAME \
             --startup-file "gunicorn --bind=0.0.0.0 --timeout 600 app:app"
-          # Or clear it completely:
-          # --startup-file ""
-          echo "✅ Startup command restored"
 
       - name: Azure Logout
         run: az logout

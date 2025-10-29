@@ -76,10 +76,26 @@ class StudentAPI:
             if not isinstance(student, dict):
                 print(idx, student)
                 continue
-            student_id = student.get("studentID") or student.get("trueStudentID")
-            first_name = student.get("usualFirstName") or student.get("legalFirstName")
-            last_name = student.get("usualLastName") or student.get("legalLastName")
-            print(f"{idx}. {first_name} {last_name} (ID: {student_id})")
+            
+            # Collect student information
+            pen = student.get("pen", "N/A")
+            first_name = student.get("legalFirstName", "")
+            middle_names = student.get("legalMiddleNames", "")
+            last_name = student.get("legalLastName", "")
+            dob = student.get("dob", "N/A")
+            local_id = student.get("localID", "N/A")
+            
+            # Build full name
+            name_parts = [first_name]
+            if middle_names:
+                name_parts.append(middle_names)
+            name_parts.append(last_name)
+            full_name = " ".join(filter(None, name_parts))
+            
+            print(f"{idx}. {full_name}")
+            print(f"    PEN: {pen}")
+            print(f"    DOB: {dob}")
+            print(f"    Local ID: {local_id}")
 
     @staticmethod
     def print_one_student(student, indent=2):
@@ -94,14 +110,31 @@ class StudentAPI:
     @staticmethod
     def student_to_text(student):
         parts = []
+        
+        # Include PEN
+        if student.get("pen"):
+            parts.append(f"PEN {student['pen']}")
+            
+        # Include full name
         if student.get("legalFirstName"):
             parts.append(student["legalFirstName"])
+        if student.get("legalMiddleNames"):
+            parts.append(student["legalMiddleNames"])
         if student.get("legalLastName"):
             parts.append(student["legalLastName"])
+            
+        # Include DOB
         if student.get("dob"):
             parts.append(f"born {student['dob']}")
+            
+        # Include Local ID
+        if student.get("localID"):
+            parts.append(f"local ID {student['localID']}")
+            
+        # Include grade if available
         if student.get("gradeCode"):
             parts.append(f"grade {student['gradeCode']}")
+            
         return ", ".join(parts)
 
     def embed_student(self, student):
@@ -122,10 +155,12 @@ if __name__ == "__main__":
 
     # Test embedding one student
     sample_student = {
-        "legalFirstName": "Alice",
-        "legalLastName": "Smith",
-        "dob": "2005-03-20",
-        "gradeCode": "09"
+        "pen": 350800,
+        "legalFirstName": "ROBYN",
+        "legalMiddleNames": "DONNELLY",
+        "legalLastName": "ANDERSON",
+        "dob": "2010-11-09",
+        "localID": "892056259223"
     }
     vector = api.embed_student(sample_student)
     print("Embedding vector length:", len(vector))

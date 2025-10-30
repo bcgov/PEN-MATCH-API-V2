@@ -1,9 +1,6 @@
 name: Test Cosmos DB Connection via App Service
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

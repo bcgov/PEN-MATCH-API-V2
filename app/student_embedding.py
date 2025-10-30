@@ -1,17 +1,69 @@
-from sentence_transformers import SentenceTransformer
+from azure.keyvault.secrets import SecretClient
+from azure.identity import ManagedIdentityCredential
+from openai import OpenAI, AzureOpenAI
 from sklearn.metrics.pairwise import cosine_similarity
 import json
 import hashlib
 import numpy as np
-from student_API import StudentAPI  
+import os
+import requests
+from student_API_VM import StudentAPI  
 
 class StudentEmbedding:
-    def __init__(self, student_api):
+    def __init__(self, student_api, key_vault_url=None):
         self.api = student_api
-        self.embedding_models = {
-            "MiniLM": SentenceTransformer("all-MiniLM-L6-v2"),
-        }
         self.index = {}  # will store pen -> embeddings + raw data
+        
+        # Initialize Azure Key Vault client if URL provided
+        if key_vault_url:
+            credential = ManagedIdentityCredential()
+            self.secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
+            
+            # OpenAI configuration from Key Vault
+            self.openai_api_key = self.get_secret("OPENAI-API-KEY")
+            try:
+                self.openai_api_base = self.get_secret("OPENAI-API-BASE")  # Optional: for Azure OpenAI
+            except:
+                self.openai_api_base = None
+            
+            # Configure OpenAI client
+            if self.openai_api_base:
+                # Azure OpenAI
+                self.openai_client = AzureOpenAI(
+                    api_key=self.openai_api_key,
+                    api_version="2023-05-15",
+                    azure_endpoint=self.openai_api_base
+                )
+            else:
+                # Standard OpenAI
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+        else:
+            # Fallback to environment variables
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            # OpenAI configuration from environment
+            self.openai_api_key = os.getenv("OPENAI_API_KEY")
+            self.openai_api_base = os.getenv("OPENAI_API_BASE")
+            
+            if self.openai_api_base:
+                # Azure OpenAI
+                self.openai_client = AzureOpenAI(
+                    api_key=self.openai_api_key,
+                    api_version="2023-05-15",
+                    azure_endpoint=self.openai_api_base
+                )
+            else:
+                # Standard OpenAI
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+
+    def get_secret(self, secret_name):
+        """Retrieve a secret from Azure Key Vault"""
+        try:
+            retrieved_secret = self.secret_client.get_secret(secret_name)
+            return retrieved_secret.value
+        except Exception as e:
+            raise ValueError(f"Failed to retrieve secret '{secret_name}' from Key Vault: {str(e)}")
 
     # ------------------ Generate text variants ------------------
     def student_to_text_variants(self, student):
@@ -36,16 +88,28 @@ class StudentEmbedding:
         return variants
 
     # ------------------ Generate embedding ------------------
-    def embed_student_variant(self, student, model_name="MiniLM"):
-        if model_name not in self.embedding_models:
-            raise ValueError(f"Model {model_name} not available")
-        model = self.embedding_models[model_name]
+    def embed_student_variant(self, student):
+        """Generate embedding using OpenAI's text-embedding-ada-002 model"""
         variants = self.student_to_text_variants(student)
-        embeddings = {k: model.encode(v) for k, v in variants.items()}
+        embeddings = {}
+        
+        for variant_name, text in variants.items():
+            try:
+                response = self.openai_client.embeddings.create(
+                    input=text,
+                    model="text-embedding-ada-002"
+                )
+                
+                embedding = response.data[0].embedding
+                embeddings[variant_name] = np.array(embedding)
+                
+            except Exception as e:
+                raise ValueError(f"Failed to generate embedding for variant '{variant_name}': {str(e)}")
+        
         return embeddings
 
     # ------------------ Build local index ------------------
-    def build_local_index(self, students, model_name="MiniLM"):
+    def build_local_index(self, students):
         """
         Stores embeddings for each student in a local dict using pen as key.
         Only stores the specified core fields.
@@ -55,7 +119,7 @@ class StudentEmbedding:
             if not pen:
                 continue  # Skip students without PEN
                 
-            embeddings = self.embed_student_variant(student, model_name)
+            embeddings = self.embed_student_variant(student)
             self.index[pen] = {
                 "embeddings": embeddings,
                 "raw_data": {
@@ -69,18 +133,14 @@ class StudentEmbedding:
             }
 
     # ------------------ Local search ------------------
-    def search_local(self, query_student, model_name="MiniLM", variant="student_info", top_k=1):
+    def search_local(self, query_student, variant="student_info", top_k=1):
         """
         Find top_k closest students in local index to query_student.
         Returns a list of raw_data dicts with only core fields.
         """
-        if model_name not in self.embedding_models:
-            raise ValueError(f"Model {model_name} not available")
-        model = self.embedding_models[model_name]
-
-        # Generate query embedding
-        query_text = self.student_to_text_variants(query_student).get(variant, "")
-        query_vec = model.encode(query_text).reshape(1, -1)
+        # Generate query embedding using OpenAI
+        query_embeddings = self.embed_student_variant(query_student)
+        query_vec = query_embeddings[variant].reshape(1, -1)
 
         # Compare with all students
         results = []
@@ -96,10 +156,14 @@ class StudentEmbedding:
 
 # ------------------ Example usage ------------------
 if __name__ == "__main__":
-    api = StudentAPI()
+    # Use Azure Key Vault with Managed Identity
+    key_vault_url = "https://pen-match-api-v2.vault.azure.net"
+    
+    # Initialize API and embedding system with same credentials
+    api = StudentAPI(key_vault_url=key_vault_url)
+    emb = StudentEmbedding(api, key_vault_url=key_vault_url)
+    
     students = api.get_student_page(page=1, size=10)  # first 10 students
-
-    emb = StudentEmbedding(api)
     emb.build_local_index(students)
 
     # Test search with the provided student structure

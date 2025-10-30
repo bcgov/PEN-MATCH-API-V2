@@ -1,17 +1,15 @@
 import os
 import requests
 from azure.keyvault.secrets import SecretClient
-from azure.identity import DefaultAzureCredential
-from sentence_transformers import SentenceTransformer
+from azure.identity import ManagedIdentityCredential
+import openai
 import json
 
 class StudentAPI:
     def __init__(self, key_vault_url=None):
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        
         # Initialize Azure Key Vault client if URL provided
         if key_vault_url:
-            credential = DefaultAzureCredential()
+            credential = ManagedIdentityCredential()
             self.secret_client = SecretClient(vault_url=key_vault_url, credential=credential)
             
             # Retrieve secrets from Azure Key Vault
@@ -19,6 +17,17 @@ class StudentAPI:
             self.client_id = self.get_secret("CLIENT-ID")
             self.client_secret = self.get_secret("CLIENT-SECRET")
             self.api_base_url = self.get_secret("API-BASE-URL")
+            
+            # OpenAI configuration from Key Vault
+            self.openai_api_key = self.get_secret("OPENAI-API-KEY")
+            self.openai_api_base = self.get_secret("OPENAI-API-BASE")  # Optional: for Azure OpenAI
+            
+            # Configure OpenAI
+            openai.api_key = self.openai_api_key
+            if self.openai_api_base:
+                openai.api_base = self.openai_api_base
+                openai.api_type = "azure"  # Set this if using Azure OpenAI
+                openai.api_version = "2023-05-15"  # Required for Azure OpenAI
         else:
             # Fallback to environment variables
             from dotenv import load_dotenv
@@ -27,6 +36,16 @@ class StudentAPI:
             self.client_id = os.getenv("CLIENT_ID")
             self.client_secret = os.getenv("CLIENT_SECRET")
             self.api_base_url = os.getenv("API_BASE_URL")
+            
+            # OpenAI configuration from environment
+            self.openai_api_key = os.getenv("OPENAI_API_KEY")
+            self.openai_api_base = os.getenv("OPENAI_API_BASE")
+            
+            openai.api_key = self.openai_api_key
+            if self.openai_api_base:
+                openai.api_base = self.openai_api_base
+                openai.api_type = "azure"
+                openai.api_version = "2023-05-15"
 
     def get_secret(self, secret_name):
         """Retrieve a secret from Azure Key Vault"""
@@ -76,7 +95,6 @@ class StudentAPI:
         else:
             return [data]
 
-    # ...existing code...
     @staticmethod
     def print_json_structure(data, indent=0):
         prefix = "  " * indent
@@ -156,14 +174,33 @@ class StudentAPI:
         return ", ".join(parts)
 
     def embed_student(self, student):
+        """Generate embedding using OpenAI's text-embedding-ada-002 model"""
         text = self.student_to_text(student)
-        embedding = self.model.encode(text)
-        return embedding
+        
+        try:
+            if openai.api_type == "azure":
+                # Azure OpenAI format
+                response = openai.Embedding.create(
+                    engine="text-embedding-ada-002",  # deployment name in Azure
+                    input=text
+                )
+            else:
+                # Standard OpenAI format
+                response = openai.Embedding.create(
+                    model="text-embedding-ada-002",
+                    input=text
+                )
+            
+            embedding = response['data'][0]['embedding']
+            return embedding
+            
+        except Exception as e:
+            raise ValueError(f"Failed to generate embedding: {str(e)}")
 
 # ------------------ Example usage ------------------
 if __name__ == "__main__":
-    # Option 1: Use Azure Key Vault
-    key_vault_url = "https://your-keyvault-name.vault.azure.net/"
+    # Option 1: Use Azure Key Vault with Managed Identity
+    key_vault_url = "https://pen-match-api-v2.vault.azure.net"
     api = StudentAPI(key_vault_url=key_vault_url)
     
     # Option 2: Use environment variables (fallback)

@@ -3,9 +3,6 @@ import numpy as np
 from app.core.student_api import StudentAPI
 from app.core.student_embedding import StudentEmbedding
 from app.database.cosmos_client import CosmosDBClient
-from app.utils.logger import get_logger
-
-logger = get_logger(__name__)
 
 class StudentWorkflow:
     def __init__(self):
@@ -16,7 +13,7 @@ class StudentWorkflow:
 
     def create_embeddings_for_students(self, students):
         """Create embeddings and store in Cosmos DB"""
-        logger.info(f"Creating embeddings for {len(students)} students")
+        print(f"Creating embeddings for {len(students)} students")
         
         # Generate embeddings
         embeddings = self.embedding_service.generate_embeddings_batch(students)
@@ -24,7 +21,7 @@ class StudentWorkflow:
         # Store in Cosmos DB
         results = self.cosmos_client.batch_insert_embeddings(embeddings)
         
-        logger.info(f"Successfully stored {len(results)} student embeddings")
+        print(f"Successfully stored {len(results)} student embeddings")
         return results
 
     def find_perfect_match(self, query_student, candidates):
@@ -45,10 +42,10 @@ class StudentWorkflow:
         
         # Check if it's a perfect match
         if best_score >= self.similarity_threshold:
-            logger.info(f"Perfect match found with score: {best_score}")
+            print(f"Perfect match found with score: {best_score}")
             return best_match, best_score
         
-        logger.info(f"No perfect match found. Best score: {best_score}")
+        print(f"No perfect match found. Best score: {best_score}")
         return None, best_score
 
     def process_student_query(self, query_student):
@@ -59,11 +56,11 @@ class StudentWorkflow:
         if not first_name or not last_name:
             raise ValueError("First name and last name are required")
         
-        logger.info(f"Processing query for: {first_name} {last_name}")
+        print(f"Processing query for: {first_name} {last_name}")
         
         # Step 1: Check if name exists in Cosmos DB
         if self.cosmos_client.name_exists(first_name, last_name):
-            logger.info("Name found in Cosmos DB, fetching candidates")
+            print("Name found in Cosmos DB, fetching candidates")
             
             # Fetch candidates from Cosmos
             candidates = self.cosmos_client.get_students_by_name(first_name, last_name)
@@ -88,7 +85,7 @@ class StudentWorkflow:
                 }
         
         else:
-            logger.info("Name not found in Cosmos DB, fetching from source")
+            print("Name not found in Cosmos DB, fetching from source")
             
             # Step 2: Fetch from source database
             source_students = self.student_api.get_students_by_name(first_name, last_name)
@@ -131,11 +128,11 @@ class StudentWorkflow:
             if max_pages and page > max_pages:
                 break
                 
-            logger.info(f"Processing page {page}")
+            print(f"Processing page {page}")
             students = self.student_api.get_student_page(page=page, size=page_size)
             
             if not students:
-                logger.info("No more students to process")
+                print("No more students to process")
                 break
             
             # Filter students that don't exist in Cosmos
@@ -148,11 +145,11 @@ class StudentWorkflow:
             if new_students:
                 self.create_embeddings_for_students(new_students)
                 total_imported += len(new_students)
-                logger.info(f"Imported {len(new_students)} new students from page {page}")
+                print(f"Imported {len(new_students)} new students from page {page}")
             
             page += 1
         
-        logger.info(f"Bulk import completed. Total imported: {total_imported}")
+        print(f"Bulk import completed. Total imported: {total_imported}")
         return total_imported
 
 if __name__ == "__main__":

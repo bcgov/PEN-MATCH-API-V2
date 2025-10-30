@@ -19,7 +19,7 @@ class Settings:
             self.openai_api_base = self.get_secret("OPENAI-API-BASE", required=False)
             self.cosmos_endpoint = self.get_secret("COSMOS-ENDPOINT")
             self.cosmos_key = self.get_secret("COSMOS-KEY")
-            self.oracle_connection_string = self.get_secret("ORACLE-CONNECTION-STRING")
+            
         else:
             # Fallback to environment variables
             from dotenv import load_dotenv
@@ -32,8 +32,7 @@ class Settings:
             self.openai_api_base = os.getenv("OPENAI_API_BASE")
             self.cosmos_endpoint = os.getenv("COSMOS_ENDPOINT")
             self.cosmos_key = os.getenv("COSMOS_KEY")
-            self.oracle_connection_string = os.getenv("ORACLE_CONNECTION_STRING")
-
+            
     def get_secret(self, secret_name, required=True):
         try:
             retrieved_secret = self.secret_client.get_secret(secret_name)

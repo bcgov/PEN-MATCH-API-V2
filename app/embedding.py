@@ -3,7 +3,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import json
 import hashlib
 import numpy as np
-from test_API import StudentAPI  
+from student_API import StudentAPI  
 
 class StudentEmbedding:
     def __init__(self, student_api):
@@ -17,27 +17,22 @@ class StudentEmbedding:
     def student_to_text_variants(self, student):
         variants = {}
 
-        # Variant 1: legal names + dob
-        parts1 = []
-        for f in ["legalFirstName", "legalLastName", "dob"]:
-            if student.get(f):
-                parts1.append(student[f] if f != "dob" else f"born {student[f]}")
-        variants["legal_name_dob"] = ", ".join(parts1)
-
-        # Variant 2: usual names + dob
-        parts2 = []
-        for f in ["usualFirstName", "usualLastName", "dob"]:
-            if student.get(f):
-                parts2.append(student[f] if f != "dob" else f"born {student[f]}")
-        variants["usual_name_dob"] = ", ".join(parts2)
-
-        # Variant 3: legal names + grade
-        parts3 = []
-        for f in ["legalFirstName", "legalLastName", "gradeCode"]:
-            if student.get(f):
-                parts3.append(student[f] if f != "gradeCode" else f"grade {student[f]}")
-        variants["legal_name_grade"] = ", ".join(parts3)
-
+        # Single variant: only pen + legal names + dob + localID
+        parts = []
+        if student.get("pen"):
+            parts.append(f"PEN {student['pen']}")
+        if student.get("legalFirstName"):
+            parts.append(student["legalFirstName"])
+        if student.get("legalMiddleNames"):
+            parts.append(student["legalMiddleNames"])
+        if student.get("legalLastName"):
+            parts.append(student["legalLastName"])
+        if student.get("dob"):
+            parts.append(f"born {student['dob']}")
+        if student.get("localID"):
+            parts.append(f"local ID {student['localID']}")
+        
+        variants["student_info"] = ", ".join(parts)
         return variants
 
     # ------------------ Generate embedding ------------------
@@ -53,24 +48,31 @@ class StudentEmbedding:
     def build_local_index(self, students, model_name="MiniLM"):
         """
         Stores embeddings for each student in a local dict using pen as key.
+        Only stores the specified core fields.
         """
         for student in students:
-            pen = student.get("pen") or student.get("studentID")
+            pen = student.get("pen")
+            if not pen:
+                continue  # Skip students without PEN
+                
             embeddings = self.embed_student_variant(student, model_name)
             self.index[pen] = {
                 "embeddings": embeddings,
-                "raw_data": {k: student.get(k) for k in [
-                    "legalFirstName", "legalMiddleNames", "legalLastName",
-                    "dob", "sexCode", "genderCode", "email",
-                    "postalCode", "localID", "gradeCode", "gradeYear"
-                ]}
+                "raw_data": {
+                    "pen": student.get("pen"),
+                    "legalFirstName": student.get("legalFirstName"),
+                    "legalMiddleNames": student.get("legalMiddleNames"),
+                    "legalLastName": student.get("legalLastName"),
+                    "dob": student.get("dob"),
+                    "localID": student.get("localID")
+                }
             }
 
     # ------------------ Local search ------------------
-    def search_local(self, query_student, model_name="MiniLM", variant="legal_name_dob", top_k=1):
+    def search_local(self, query_student, model_name="MiniLM", variant="student_info", top_k=1):
         """
         Find top_k closest students in local index to query_student.
-        Returns a list of raw_data dicts.
+        Returns a list of raw_data dicts with only core fields.
         """
         if model_name not in self.embedding_models:
             raise ValueError(f"Model {model_name} not available")
@@ -100,9 +102,24 @@ if __name__ == "__main__":
     emb = StudentEmbedding(api)
     emb.build_local_index(students)
 
-    # Test search for the first student
-    query = students[0]  # pretend we want to find this student
+    # Test search with the provided student structure
+    query = {
+        "pen": 350800355,
+        "legalFirstName": "ROBYN",
+        "legalMiddleNames": "DONNELLY",
+        "legalLastName": "ANDERSON",
+        "dob": "2010-11-09",
+        "localID": "892056259223"
+    }
+    
     matches = emb.search_local(query, top_k=3)
     print("\nTop matches for query student:")
     for score, student_info in matches:
-        print(f"Score: {score:.4f}, Student info: {student_info}")
+        print(f"Score: {score:.4f}")
+        print(f"  PEN: {student_info.get('pen', 'N/A')}")
+        print(f"  First Name: {student_info.get('legalFirstName', 'N/A')}")
+        print(f"  Middle Names: {student_info.get('legalMiddleNames', 'N/A')}")
+        print(f"  Last Name: {student_info.get('legalLastName', 'N/A')}")
+        print(f"  DOB: {student_info.get('dob', 'N/A')}")
+        print(f"  Local ID: {student_info.get('localID', 'N/A')}")
+        print()

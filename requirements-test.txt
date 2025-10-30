@@ -33,3 +33,4 @@ langchain-openai
 python-dotenv
 azure-identity
 azure-cognitiveservices-language-textanalytics
+sentence-transformers

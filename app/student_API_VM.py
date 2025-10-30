@@ -2,7 +2,7 @@ import os
 import requests
 from azure.keyvault.secrets import SecretClient
 from azure.identity import ManagedIdentityCredential
-import openai
+from openai import OpenAI
 import json
 
 class StudentAPI:
@@ -20,14 +20,22 @@ class StudentAPI:
             
             # OpenAI configuration from Key Vault
             self.openai_api_key = self.get_secret("OPENAI-API-KEY")
-            self.openai_api_base = self.get_secret("OPENAI-API-BASE")  # Optional: for Azure OpenAI
+            try:
+                self.openai_api_base = self.get_secret("OPENAI-API-BASE")  # Optional: for Azure OpenAI
+            except:
+                self.openai_api_base = None
             
-            # Configure OpenAI
-            openai.api_key = self.openai_api_key
+            # Configure OpenAI client
             if self.openai_api_base:
-                openai.api_base = self.openai_api_base
-                openai.api_type = "azure"  # Set this if using Azure OpenAI
-                openai.api_version = "2023-05-15"  # Required for Azure OpenAI
+                # Azure OpenAI
+                self.openai_client = OpenAI(
+                    api_key=self.openai_api_key,
+                    base_url=self.openai_api_base
+                )
+            else:
+                # Standard OpenAI
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+                
         else:
             # Fallback to environment variables
             from dotenv import load_dotenv
@@ -41,11 +49,15 @@ class StudentAPI:
             self.openai_api_key = os.getenv("OPENAI_API_KEY")
             self.openai_api_base = os.getenv("OPENAI_API_BASE")
             
-            openai.api_key = self.openai_api_key
             if self.openai_api_base:
-                openai.api_base = self.openai_api_base
-                openai.api_type = "azure"
-                openai.api_version = "2023-05-15"
+                # Azure OpenAI
+                self.openai_client = OpenAI(
+                    api_key=self.openai_api_key,
+                    base_url=self.openai_api_base
+                )
+            else:
+                # Standard OpenAI
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
 
     def get_secret(self, secret_name):
         """Retrieve a secret from Azure Key Vault"""
@@ -178,20 +190,12 @@ class StudentAPI:
         text = self.student_to_text(student)
         
         try:
-            if openai.api_type == "azure":
-                # Azure OpenAI format
-                response = openai.Embedding.create(
-                    engine="text-embedding-ada-002",  # deployment name in Azure
-                    input=text
-                )
-            else:
-                # Standard OpenAI format
-                response = openai.Embedding.create(
-                    model="text-embedding-ada-002",
-                    input=text
-                )
+            response = self.openai_client.embeddings.create(
+                input=text,
+                model="text-embedding-ada-002"
+            )
             
-            embedding = response['data'][0]['embedding']
+            embedding = response.data[0].embedding
             return embedding
             
         except Exception as e:

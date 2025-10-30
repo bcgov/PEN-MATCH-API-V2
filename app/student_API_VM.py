@@ -2,7 +2,7 @@ import os
 import requests
 from azure.keyvault.secrets import SecretClient
 from azure.identity import ManagedIdentityCredential
-from openai import OpenAI
+from openai import OpenAI, AzureOpenAI
 import json
 
 class StudentAPI:
@@ -28,9 +28,10 @@ class StudentAPI:
             # Configure OpenAI client
             if self.openai_api_base:
                 # Azure OpenAI
-                self.openai_client = OpenAI(
+                self.openai_client = AzureOpenAI(
                     api_key=self.openai_api_key,
-                    base_url=self.openai_api_base
+                    api_version="2023-05-15",
+                    azure_endpoint=self.openai_api_base
                 )
             else:
                 # Standard OpenAI
@@ -51,9 +52,10 @@ class StudentAPI:
             
             if self.openai_api_base:
                 # Azure OpenAI
-                self.openai_client = OpenAI(
+                self.openai_client = AzureOpenAI(
                     api_key=self.openai_api_key,
-                    base_url=self.openai_api_base
+                    api_version="2023-05-15",
+                    azure_endpoint=self.openai_api_base
                 )
             else:
                 # Standard OpenAI

@@ -6,195 +6,131 @@ from app.core.student_match import StudentWorkflow
 
 def test_existing_student_match():
     """Test 1: Import first student's name and test embedding match"""
-    print("=" * 60)
     print("TEST 1: EXISTING STUDENT EMBEDDING MATCH")
-    print("=" * 60)
+    print("=" * 50)
     
     workflow = StudentWorkflow()
     
     # Get first student from source
     students = workflow.student_api.get_student_page(page=1, size=1)
     if not students:
-        print("❌ No students found in source database")
+        print("No students found")
         return False
     
     first_student = students[0]
     first_name = first_student.get('legalFirstName')
     last_name = first_student.get('legalLastName')
     
-    print(f"Selected student: {first_name} {last_name}")
-    workflow.student_api.print_student_info([first_student])
+    print(f"Selected: {first_name} {last_name} (PEN: {first_student.get('pen')})")
     
-    # Get all students with this name from source
+    # Get ALL students with this name and import to Cosmos
     all_same_name = workflow.student_api.get_students_by_name(first_name, last_name)
-    print(f"\nFound {len(all_same_name)} students with name '{first_name} {last_name}' in source")
+    print(f"Found {len(all_same_name)} students with this name in source")
     
-    # Import all students with this name to Cosmos
-    print(f"\nImporting {len(all_same_name)} students to Cosmos...")
     workflow.create_embeddings_for_students(all_same_name)
     
+    # Verify import
+    cosmos_students = workflow.cosmos_client.get_students_by_name(first_name, last_name)
+    print(f"Imported {len(cosmos_students)} students to Cosmos")
+    
     # Test embedding match
-    print(f"\nTesting embedding match for: {first_name} {last_name}")
     result = workflow.process_student_query(first_student)
     
-    print(f"Result status: {result['status']}")
     if result['status'] == 'perfect_match_found':
-        print(f"✅ Perfect match found!")
-        print(f"   Similarity score: {result['similarity_score']:.4f}")
-        print(f"   Matched PEN: {result['student'].get('pen')}")
-        print(f"   Original PEN: {first_student.get('pen')}")
-        print(f"   PENs match: {result['student'].get('pen') == first_student.get('pen')}")
+        print(f"Perfect match found (score: {result['similarity_score']:.4f})")
         return True
-    elif result['status'] == 'no_perfect_match':
-        print(f"⚠️ No perfect match found")
-        print(f"   Best score: {result['best_score']:.4f}")
-        print(f"   Found {len(result['candidates'])} candidates")
-        return False
     else:
-        print(f"❌ Unexpected result: {result}")
+        print(f"No perfect match (best score: {result.get('best_score', 0):.4f})")
         return False
 
 def test_new_student_import():
     """Test 2: Import student whose name doesn't exist in Cosmos"""
-    print("\n" + "=" * 60)
-    print("TEST 2: NEW STUDENT NAME IMPORT AND MATCH")
-    print("=" * 60)
+    print("\nTEST 2: NEW STUDENT NAME IMPORT AND MATCH")
+    print("=" * 50)
     
     workflow = StudentWorkflow()
     
-    # Start from page 2 to find a student that doesn't exist in Cosmos
+    # Find student that doesn't exist in Cosmos
     test_student = None
-    page = 2
-    max_pages_to_check = 5
-    
-    print(f"Searching for a student that doesn't exist in Cosmos...")
-    
-    while page <= max_pages_to_check:
-        print(f"Checking page {page}...")
-        students = workflow.student_api.get_student_page(page=page, size=10)
-        
+    for page in range(2, 11):
+        students = workflow.student_api.get_student_page(page=page, size=5)
         if not students:
-            print(f"No students found on page {page}")
-            page += 1
             continue
-        
-        # Check each student to find one that doesn't exist in Cosmos
-        for student in students:
-            student_name = student.get('legalFirstName')
-            student_last = student.get('legalLastName')
             
-            if student_name and student_last:
-                # Check if this name exists in Cosmos
-                name_exists = workflow.cosmos_client.name_exists(student_name, student_last)
-                if not name_exists:
-                    test_student = student
-                    print(f"✅ Found non-existing student: {student_name} {student_last}")
-                    break
+        for student in students:
+            first_name = student.get('legalFirstName')
+            last_name = student.get('legalLastName')
+            
+            if first_name and last_name and not workflow.cosmos_client.name_exists(first_name, last_name):
+                test_student = student
+                break
         
         if test_student:
             break
-        
-        print(f"All students on page {page} already exist in Cosmos")
-        page += 1
     
     if not test_student:
-        print("❌ Could not find a student that doesn't exist in Cosmos")
-        print("⚠️ Using student from page 2 anyway for testing...")
-        students = workflow.student_api.get_student_page(page=2, size=1)
-        if students:
-            test_student = students[0]
-        else:
-            print("❌ No students found on page 2")
-            return False
+        print("Could not find non-existing student, using page 10 student")
+        students = workflow.student_api.get_student_page(page=10, size=1)
+        test_student = students[0] if students else None
+        
+    if not test_student:
+        print("No test student available")
+        return False
     
     student_name = test_student.get('legalFirstName')
     student_last = test_student.get('legalLastName')
     
-    print(f"\nSelected test student: {student_name} {student_last}")
-    workflow.student_api.print_student_info([test_student])
+    print(f"Selected: {student_name} {student_last} (PEN: {test_student.get('pen')})")
     
-    # Verify this name doesn't exist in Cosmos before test
+    # Verify name doesn't exist before test
     name_exists_before = workflow.cosmos_client.name_exists(student_name, student_last)
-    print(f"\nName exists in Cosmos before test: {name_exists_before}")
+    print(f"Exists in Cosmos before: {name_exists_before}")
     
-    if name_exists_before:
-        print("⚠️ Name already exists in Cosmos, test may not demonstrate new import")
-    else:
-        print("✅ Name confirmed to NOT exist in Cosmos - perfect for testing!")
+    # Get source students count
+    source_students = workflow.student_api.get_students_by_name(student_name, student_last)
+    print(f"Found {len(source_students)} students with this name in source")
     
-    # Process query (should trigger import if name doesn't exist)
-    print(f"\nProcessing query for: {student_name} {student_last}")
+    if len(source_students) == 0:
+        print("No students found in source")
+        return False
+    
+    # Process query (should import and match)
     result = workflow.process_student_query(test_student)
     
-    print(f"Result status: {result['status']}")
-    if result['status'] == 'perfect_match_found':
-        print(f"✅ Perfect match found!")
-        print(f"   Similarity score: {result['similarity_score']:.4f}")
-        print(f"   Source: {result['source']}")
-        print(f"   Matched PEN: {result['student'].get('pen')}")
-        print(f"   Original PEN: {test_student.get('pen')}")
-        print(f"   PENs match: {result['student'].get('pen') == test_student.get('pen')}")
-        success = True
-    elif result['status'] == 'no_perfect_match':
-        print(f"⚠️ No perfect match found")
-        print(f"   Best score: {result['best_score']:.4f}")
-        print(f"   Found {len(result['candidates'])} candidates")
-        print(f"   Source: {result['source']}")
-        success = False
-    elif result['status'] == 'no_students_found':
-        print(f"ℹ️ No students found with name: {student_name} {student_last}")
-        success = False
-    else:
-        print(f"❌ Unexpected result: {result}")
-        success = False
-    
-    # Verify name now exists in Cosmos
+    # Verify import happened
     name_exists_after = workflow.cosmos_client.name_exists(student_name, student_last)
-    print(f"\nName exists in Cosmos after test: {name_exists_after}")
-    
-    if name_exists_after and not name_exists_before:
-        print("✅ Successfully imported new name to Cosmos")
-    elif name_exists_after:
-        print("ℹ️ Name confirmed to exist in Cosmos")
-    else:
-        print("❌ Name still doesn't exist in Cosmos")
-    
-    # Show all students with this name in Cosmos
     cosmos_students = workflow.cosmos_client.get_students_by_name(student_name, student_last)
-    print(f"\nStudents in Cosmos with name '{student_name} {student_last}': {len(cosmos_students)}")
-    for i, student in enumerate(cosmos_students, 1):
-        print(f"   {i}. PEN: {student.get('pen')}, DOB: {student.get('dob')}")
     
-    return success
+    print(f"Exists in Cosmos after: {name_exists_after}")
+    print(f"Students in Cosmos: {len(cosmos_students)}")
+    
+    if result['status'] == 'perfect_match_found':
+        print(f"Perfect match found (score: {result['similarity_score']:.4f})")
+        return True
+    else:
+        print(f"No perfect match (best score: {result.get('best_score', 0):.4f})")
+        return False
 
 def run_all_tests():
     """Run both tests"""
-    print("STARTING STUDENT MATCH TESTS")
+    print("STUDENT MATCH TESTS")
     print("=" * 80)
     
     try:
-        # Test 1: Existing student embedding match
         test1_success = test_existing_student_match()
-        
-        # Test 2: New student import and match
         test2_success = test_new_student_import()
         
-        # Summary
-        print("\n" + "=" * 80)
-        print("TEST SUMMARY")
-        print("=" * 80)
-        print(f"Test 1 (Existing Student Match): {'✅ PASSED' if test1_success else '❌ FAILED'}")
-        print(f"Test 2 (New Student Import): {'✅ PASSED' if test2_success else '❌ FAILED'}")
+        print(f"\nRESULTS:")
+        print(f"Test 1: {'PASSED' if test1_success else 'FAILED'}")
+        print(f"Test 2: {'PASSED' if test2_success else 'FAILED'}")
         
         if test1_success and test2_success:
-            print("\n🎉 ALL TESTS PASSED!")
+            print("ALL TESTS PASSED!")
         else:
-            print("\n⚠️ Some tests failed. Please review the results above.")
+            print("Some tests failed")
             
     except Exception as e:
-        print(f"\n❌ Tests failed with error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        print(f"Tests failed: {str(e)}")
 
 if __name__ == "__main__":
     run_all_tests()

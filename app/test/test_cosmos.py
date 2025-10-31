@@ -241,7 +241,7 @@ def test_cosmos_access():
         print("=" * 80)
         
     except Exception as e:
-        print(f"❌ Test failed with error: {str(e)}")
+        print(f"Test failed with error: {str(e)}")
         import traceback
         traceback.print_exc()
 
@@ -286,10 +286,10 @@ def test_specific_operations():
         name_results = test_suite.get_students_by_exact_name("TestFirst", "TestLast")
         test_suite.print_student_summary(name_results)
         
-        print("\n✅ Specific operations test completed")
+        print("\nSpecific operations test completed")
         
     except Exception as e:
-        print(f"❌ Specific operations test failed: {str(e)}")
+        print(f"Specific operations test failed: {str(e)}")
         import traceback
         traceback.print_exc()
 

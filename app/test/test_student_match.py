@@ -43,7 +43,7 @@ def test_existing_student_match():
     # Get first student from source
     students = workflow.student_api.get_student_page(page=1, size=1)
     if not students:
-        print("❌ No students found")
+        print("No students found")
         return False
     
     first_student = students[0]
@@ -63,16 +63,16 @@ def test_existing_student_match():
     print(f"Imported {len(cosmos_students)} students to Cosmos")
     
     if len(cosmos_students) != len(all_same_name):
-        print(f"⚠️ Warning: Expected {len(all_same_name)} but got {len(cosmos_students)} in Cosmos")
+        print(f"Warning: Expected {len(all_same_name)} but got {len(cosmos_students)} in Cosmos")
     
     # Test embedding match
     result = workflow.process_student_query(first_student)
     
     if result['status'] == 'perfect_match_found':
-        print(f"✅ Perfect match found (score: {result['similarity_score']:.4f})")
+        print(f"Perfect match found (score: {result['similarity_score']:.4f})")
         return True
     else:
-        print(f"❌ No perfect match (best score: {result.get('best_score', 0):.4f})")
+        print(f"No perfect match (best score: {result.get('best_score', 0):.4f})")
         return False
 
 def test_new_student_import():
@@ -108,7 +108,7 @@ def test_new_student_import():
             break
     
     if not test_student:
-        print(f"❌ Could not find non-existing student after checking {pages_checked} pages")
+        print(f"Could not find non-existing student after checking {pages_checked} pages")
         print("All students seem to already exist in Cosmos")
         return False
     
@@ -122,7 +122,7 @@ def test_new_student_import():
     print(f"Exists in Cosmos before: {name_exists_before}")
     
     if name_exists_before:
-        print("❌ Error: Selected student already exists in Cosmos!")
+        print("Error: Selected student already exists in Cosmos!")
         return False
     
     # Get ALL students with this name from source
@@ -130,7 +130,7 @@ def test_new_student_import():
     print(f"Found {len(source_students)} students with this name in source")
     
     if len(source_students) == 0:
-        print("❌ No students found in source")
+        print("No students found in source")
         return False
     
     # Process query (should import ALL students with this name)
@@ -144,13 +144,13 @@ def test_new_student_import():
     print(f"Students in Cosmos: {len(cosmos_students)} (expected: {len(source_students)})")
     
     if len(cosmos_students) != len(source_students):
-        print(f"⚠️ Warning: Expected {len(source_students)} but got {len(cosmos_students)} in Cosmos")
+        print(f"Warning: Expected {len(source_students)} but got {len(cosmos_students)} in Cosmos")
     
     if result['status'] == 'perfect_match_found':
-        print(f"✅ Perfect match found (score: {result['similarity_score']:.4f})")
+        print(f"Perfect match found (score: {result['similarity_score']:.4f})")
         return True
     else:
-        print(f"❌ No perfect match (best score: {result.get('best_score', 0):.4f})")
+        print(f"No perfect match (best score: {result.get('best_score', 0):.4f})")
         return False
 
 def run_all_tests():
@@ -173,16 +173,16 @@ def run_all_tests():
         test2_success = test_new_student_import()
         
         print(f"\nRESULTS:")
-        print(f"Test 1: {'✅ PASSED' if test1_success else '❌ FAILED'}")
-        print(f"Test 2: {'✅ PASSED' if test2_success else '❌ FAILED'}")
+        print(f"Test 1: {'PASSED' if test1_success else 'FAILED'}")
+        print(f"Test 2: {'PASSED' if test2_success else 'FAILED'}")
         
         if test1_success and test2_success:
             print("🎉 ALL TESTS PASSED!")
         else:
-            print("⚠️ Some tests failed")
+            print("Some tests failed")
             
     except Exception as e:
-        print(f"❌ Tests failed: {str(e)}")
+        print(f"Tests failed: {str(e)}")
         import traceback
         traceback.print_exc()
 

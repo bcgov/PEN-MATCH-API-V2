@@ -62,9 +62,6 @@ def test_existing_student_match():
     cosmos_students = workflow.cosmos_client.get_students_by_name(first_name, last_name)
     print(f"Imported {len(cosmos_students)} students to Cosmos")
     
-    if len(cosmos_students) != len(all_same_name):
-        print(f"Warning: Expected {len(all_same_name)} but got {len(cosmos_students)} in Cosmos")
-    
     # Test embedding match
     result = workflow.process_student_query(first_student)
     
@@ -142,9 +139,6 @@ def test_new_student_import():
     
     print(f"Exists in Cosmos after: {name_exists_after}")
     print(f"Students in Cosmos: {len(cosmos_students)} (expected: {len(source_students)})")
-    
-    if len(cosmos_students) != len(source_students):
-        print(f"Warning: Expected {len(source_students)} but got {len(cosmos_students)} in Cosmos")
     
     if result['status'] == 'perfect_match_found':
         print(f"Perfect match found (score: {result['similarity_score']:.4f})")

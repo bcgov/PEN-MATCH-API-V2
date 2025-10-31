@@ -55,36 +55,76 @@ def test_existing_student_match():
         return False
 
 def test_new_student_import():
-    """Test 2: Import second student whose name doesn't exist in Cosmos"""
+    """Test 2: Import student whose name doesn't exist in Cosmos"""
     print("\n" + "=" * 60)
     print("TEST 2: NEW STUDENT NAME IMPORT AND MATCH")
     print("=" * 60)
     
     workflow = StudentWorkflow()
     
-    # Get second student from source
-    students = workflow.student_api.get_student_page(page=1, size=2)
-    if len(students) < 2:
-        print("❌ Need at least 2 students for this test")
-        return False
+    # Start from page 2 to find a student that doesn't exist in Cosmos
+    test_student = None
+    page = 2
+    max_pages_to_check = 5
     
-    second_student = students[1]
-    second_name = second_student.get('legalFirstName')
-    second_last = second_student.get('legalLastName')
+    print(f"Searching for a student that doesn't exist in Cosmos...")
     
-    print(f"Selected second student: {second_name} {second_last}")
-    workflow.student_api.print_student_info([second_student])
+    while page <= max_pages_to_check:
+        print(f"Checking page {page}...")
+        students = workflow.student_api.get_student_page(page=page, size=10)
+        
+        if not students:
+            print(f"No students found on page {page}")
+            page += 1
+            continue
+        
+        # Check each student to find one that doesn't exist in Cosmos
+        for student in students:
+            student_name = student.get('legalFirstName')
+            student_last = student.get('legalLastName')
+            
+            if student_name and student_last:
+                # Check if this name exists in Cosmos
+                name_exists = workflow.cosmos_client.name_exists(student_name, student_last)
+                if not name_exists:
+                    test_student = student
+                    print(f"✅ Found non-existing student: {student_name} {student_last}")
+                    break
+        
+        if test_student:
+            break
+        
+        print(f"All students on page {page} already exist in Cosmos")
+        page += 1
     
-    # Check if this name exists in Cosmos before test
-    name_exists_before = workflow.cosmos_client.name_exists(second_name, second_last)
+    if not test_student:
+        print("❌ Could not find a student that doesn't exist in Cosmos")
+        print("⚠️ Using student from page 2 anyway for testing...")
+        students = workflow.student_api.get_student_page(page=2, size=1)
+        if students:
+            test_student = students[0]
+        else:
+            print("❌ No students found on page 2")
+            return False
+    
+    student_name = test_student.get('legalFirstName')
+    student_last = test_student.get('legalLastName')
+    
+    print(f"\nSelected test student: {student_name} {student_last}")
+    workflow.student_api.print_student_info([test_student])
+    
+    # Verify this name doesn't exist in Cosmos before test
+    name_exists_before = workflow.cosmos_client.name_exists(student_name, student_last)
     print(f"\nName exists in Cosmos before test: {name_exists_before}")
     
     if name_exists_before:
-        print("⚠️ Name already exists in Cosmos, but continuing test...")
+        print("⚠️ Name already exists in Cosmos, test may not demonstrate new import")
+    else:
+        print("✅ Name confirmed to NOT exist in Cosmos - perfect for testing!")
     
     # Process query (should trigger import if name doesn't exist)
-    print(f"\nProcessing query for: {second_name} {second_last}")
-    result = workflow.process_student_query(second_student)
+    print(f"\nProcessing query for: {student_name} {student_last}")
+    result = workflow.process_student_query(test_student)
     
     print(f"Result status: {result['status']}")
     if result['status'] == 'perfect_match_found':
@@ -92,8 +132,8 @@ def test_new_student_import():
         print(f"   Similarity score: {result['similarity_score']:.4f}")
         print(f"   Source: {result['source']}")
         print(f"   Matched PEN: {result['student'].get('pen')}")
-        print(f"   Original PEN: {second_student.get('pen')}")
-        print(f"   PENs match: {result['student'].get('pen') == second_student.get('pen')}")
+        print(f"   Original PEN: {test_student.get('pen')}")
+        print(f"   PENs match: {result['student'].get('pen') == test_student.get('pen')}")
         success = True
     elif result['status'] == 'no_perfect_match':
         print(f"⚠️ No perfect match found")
@@ -102,14 +142,14 @@ def test_new_student_import():
         print(f"   Source: {result['source']}")
         success = False
     elif result['status'] == 'no_students_found':
-        print(f"ℹ️ No students found with name: {second_name} {second_last}")
+        print(f"ℹ️ No students found with name: {student_name} {student_last}")
         success = False
     else:
         print(f"❌ Unexpected result: {result}")
         success = False
     
     # Verify name now exists in Cosmos
-    name_exists_after = workflow.cosmos_client.name_exists(second_name, second_last)
+    name_exists_after = workflow.cosmos_client.name_exists(student_name, student_last)
     print(f"\nName exists in Cosmos after test: {name_exists_after}")
     
     if name_exists_after and not name_exists_before:
@@ -120,8 +160,8 @@ def test_new_student_import():
         print("❌ Name still doesn't exist in Cosmos")
     
     # Show all students with this name in Cosmos
-    cosmos_students = workflow.cosmos_client.get_students_by_name(second_name, second_last)
-    print(f"\nStudents in Cosmos with name '{second_name} {second_last}': {len(cosmos_students)}")
+    cosmos_students = workflow.cosmos_client.get_students_by_name(student_name, student_last)
+    print(f"\nStudents in Cosmos with name '{student_name} {student_last}': {len(cosmos_students)}")
     for i, student in enumerate(cosmos_students, 1):
         print(f"   {i}. PEN: {student.get('pen')}, DOB: {student.get('dob')}")
     

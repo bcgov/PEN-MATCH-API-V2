@@ -1,5 +1,5 @@
 from azure.cosmos import CosmosClient, PartitionKey
-from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosResourceNotFoundError, CosmosResourceExistsError
 from app.config.settings import settings
 import json
 
@@ -44,16 +44,20 @@ class CosmosDBClient:
         document = {
             "id": str(student_data["pen"]),
             "pen": student_data["pen"],
-            "legalFirstName": student_data["legalFirstName"],
+            "legalFirstName": student_data.get("legalFirstName", ""),
             "legalMiddleNames": student_data.get("legalMiddleNames", ""),
-            "legalLastName": student_data["legalLastName"],
+            "legalLastName": student_data.get("legalLastName", ""),
             "dob": student_data.get("dob", ""),
             "localID": student_data.get("localID", ""),
             "embedding": embedding,
-            "name_key": f"{student_data['legalFirstName']}_{student_data['legalLastName']}"
+            "name_key": f"{student_data.get('legalFirstName', '')}_{student_data.get('legalLastName', '')}"
         }
         
-        return self.container.create_item(body=document)
+        try:
+            return self.container.create_item(body=document)
+        except CosmosResourceExistsError:
+            # If item already exists, replace it
+            return self.container.replace_item(item=document["id"], body=document)
 
     def get_students_by_name(self, first_name, last_name):
         """Get students by first and last name"""
@@ -96,6 +100,7 @@ class CosmosDBClient:
                     data["embedding"]
                 )
                 results.append(result)
+                print(f"Successfully inserted student {pen}")
             except Exception as e:
                 print(f"Failed to insert student {pen}: {str(e)}")
         return results

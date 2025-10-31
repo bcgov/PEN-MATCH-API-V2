@@ -60,7 +60,7 @@ class CosmosDBClient:
             return self.container.replace_item(item=document["id"], body=document)
 
     def get_students_by_name(self, first_name, last_name):
-        """Get students by first and last name"""
+        """Get ALL students by first and last name using pagination"""
         query = """
         SELECT * FROM c 
         WHERE c.legalFirstName = @first_name 
@@ -71,12 +71,21 @@ class CosmosDBClient:
             {"name": "@last_name", "value": last_name}
         ]
         
-        items = list(self.container.query_items(
+        # Use pagination to get ALL results without limit
+        all_students = []
+        query_iterator = self.container.query_items(
             query=query,
             parameters=parameters,
-            enable_cross_partition_query=True
-        ))
-        return items
+            enable_cross_partition_query=True,
+            max_item_count=100  # Process in chunks of 100
+        )
+        
+        # Iterate through all pages to get complete results
+        for page in query_iterator.by_page():
+            page_items = list(page)
+            all_students.extend(page_items)
+        
+        return all_students
 
     def get_student_by_pen(self, pen):
         """Get student by PEN"""
@@ -87,8 +96,24 @@ class CosmosDBClient:
 
     def name_exists(self, first_name, last_name):
         """Check if name combination exists in database"""
-        students = self.get_students_by_name(first_name, last_name)
-        return len(students) > 0
+        # Use a count query for efficiency
+        query = """
+        SELECT VALUE COUNT(1) FROM c 
+        WHERE c.legalFirstName = @first_name 
+        AND c.legalLastName = @last_name
+        """
+        parameters = [
+            {"name": "@first_name", "value": first_name},
+            {"name": "@last_name", "value": last_name}
+        ]
+        
+        result = list(self.container.query_items(
+            query=query,
+            parameters=parameters,
+            enable_cross_partition_query=True
+        ))
+        
+        return result[0] > 0 if result else False
 
     def batch_insert_embeddings(self, embeddings_dict):
         """Insert multiple student embeddings"""
@@ -104,6 +129,27 @@ class CosmosDBClient:
             except Exception as e:
                 print(f"Failed to insert student {pen}: {str(e)}")
         return results
+
+    def delete_all_students(self):
+        """Delete all students from the database"""
+        query = "SELECT c.id, c.pen FROM c"
+        all_students = list(self.container.query_items(
+            query=query,
+            enable_cross_partition_query=True
+        ))
+        
+        deleted_count = 0
+        for student in all_students:
+            try:
+                self.container.delete_item(
+                    item=student['id'], 
+                    partition_key=student['pen']
+                )
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete student {student.get('pen')}: {str(e)}")
+        
+        return deleted_count
     
 if __name__ == "__main__":
     try:

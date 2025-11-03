@@ -62,95 +62,78 @@ async def root():
 @app.post("/match-student", response_model=MatchResponse)
 async def match_student(student_query: StudentQuery):
     """
-    Dummy match-student endpoint for testing
+    Match a student and return their PEN number if found
+    
+    Args:
+        student_query: Student information for matching
+    
+    Returns:
+        MatchResponse: Contains PEN number if match found, or error details
     """
-    logger.info(f"[DUMMY] Received match request for: {student_query.legalFirstName} {student_query.legalLastName}")
-
-    # Return a static dummy response
-    return MatchResponse(
-        status="perfect_match_found",
-        pen="123456789",
-        similarity_score=0.98,
-        message="Dummy perfect match found",
-        source="dummy_source",
-        candidates_count=1
-    )
-
-# @app.post("/match-student", response_model=MatchResponse)
-# async def match_student(student_query: StudentQuery):
-#     """
-#     Match a student and return their PEN number if found
-    
-#     Args:
-#         student_query: Student information for matching
-    
-#     Returns:
-#         MatchResponse: Contains PEN number if match found, or error details
-#     """
-#     try:
-#         logger.info(f"Received match request for: {student_query.legalFirstName} {student_query.legalLastName}")
+    try:
+        logger.info(f"Received match request for: {student_query.legalFirstName} {student_query.legalLastName}")
         
-#         # Convert Pydantic model to dict
-#         query_student = student_query.dict()
+        # Convert Pydantic model to dict
+        query_student = student_query.dict()
         
-#         # Process the student query
-#         result = workflow.process_student_query(query_student)
+        # Process the student query
+        result = workflow.process_student_query(query_student)
         
-#         logger.info(f"Match result status: {result['status']}")
+        logger.info(f"Match result status: {result['status']}")
         
-#         # Handle different result types
-#         if result['status'] == 'perfect_match_found':
-#             pen = result['student'].get('pen')
-#             logger.info(f"Perfect match found - PEN: {pen}, Score: {result['similarity_score']:.4f}")
+        # Handle different result types
+        if result['status'] == 'perfect_match_found':
+            pen = result['student'].get('pen')
+            logger.info(f"Perfect match found - PEN: {pen}, Score: {result['similarity_score']:.4f}")
             
-#             return MatchResponse(
-#                 status="perfect_match_found",
-#                 pen=pen,
-#                 similarity_score=result['similarity_score'],
-#                 message=f"Perfect match found with {result['similarity_score']:.4f} similarity",
-#                 source=result['source']
-#             )
+            return MatchResponse(
+                status="perfect_match_found",
+                pen=pen,
+                similarity_score=result['similarity_score'],
+                message=f"Perfect match found with {result['similarity_score']:.4f} similarity",
+                source=result['source']
+            )
         
-#         elif result['status'] == 'no_perfect_match':
-#             candidates_count = len(result.get('candidates', []))
-#             logger.warning(f"No perfect match found. Best score: {result['best_score']:.4f}, Candidates: {candidates_count}")
+        elif result['status'] == 'no_perfect_match':
+            candidates_count = len(result.get('candidates', []))
+            logger.warning(f"No perfect match found. Best score: {result['best_score']:.4f}, Candidates: {candidates_count}")
             
-#             return MatchResponse(
-#                 status="no_perfect_match",
-#                 similarity_score=result['best_score'],
-#                 message=f"No perfect match found. Best similarity: {result['best_score']:.4f}",
-#                 source=result['source'],
-#                 candidates_count=candidates_count
-#             )
+            return MatchResponse(
+                status="no_perfect_match",
+                similarity_score=result['best_score'],
+                message=f"No perfect match found. Best similarity: {result['best_score']:.4f}",
+                source=result['source'],
+                candidates_count=candidates_count
+            )
         
-#         elif result['status'] == 'no_students_found':
-#             logger.warning(f"No students found: {result['message']}")
+        elif result['status'] == 'no_students_found':
+            logger.warning(f"No students found: {result['message']}")
             
-#             return MatchResponse(
-#                 status="no_students_found",
-#                 message=result['message']
-#             )
+            return MatchResponse(
+                status="no_students_found",
+                message=result['message']
+            )
         
-#         else:
-#             logger.error(f"Unexpected result status: {result['status']}")
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail=f"Unexpected result status: {result['status']}"
-#             )
+        else:
+            logger.error(f"Unexpected result status: {result['status']}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unexpected result status: {result['status']}"
+            )
     
-#     except ValueError as ve:
-#         logger.error(f"Validation error: {str(ve)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_400_BAD_REQUEST,
-#             detail=str(ve)
-#         )
+    except ValueError as ve:
+        logger.error(f"Validation error: {str(ve)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(ve)
+        )
     
-#     except Exception as e:
-#         logger.error(f"Internal server error: {str(e)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=f"Internal server error: {str(e)}"
-#         )
+    except Exception as e:
+        logger.error(f"Internal server error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 @app.post("/bulk-import")
 async def bulk_import_students(page_size: int = 100, max_pages: Optional[int] = None):

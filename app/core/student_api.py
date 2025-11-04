@@ -1,7 +1,7 @@
 import requests
 import json
 from openai import OpenAI, AzureOpenAI
-from app.config.settings import settings
+from config.settings import settings
 
 class StudentAPI:
     def __init__(self):

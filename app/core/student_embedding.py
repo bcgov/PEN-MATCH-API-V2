@@ -1,6 +1,6 @@
 import numpy as np
 from openai import OpenAI, AzureOpenAI
-from app.config.settings import settings
+from config.settings import settings
 
 class StudentEmbedding:
     def __init__(self):

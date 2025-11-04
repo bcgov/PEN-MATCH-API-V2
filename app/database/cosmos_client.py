@@ -1,6 +1,6 @@
 from azure.cosmos import CosmosClient, PartitionKey
 from azure.cosmos.exceptions import CosmosResourceNotFoundError, CosmosResourceExistsError
-from app.config.settings import settings
+from config.settings import settings
 import json
 
 class CosmosDBClient:

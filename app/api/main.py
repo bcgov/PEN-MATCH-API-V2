@@ -5,7 +5,7 @@ from typing import Optional
 import logging
 from datetime import datetime
 
-from app.core.student_match import StudentWorkflow
+from core.student_match import StudentWorkflow
 
 # Configure logging
 logging.basicConfig(

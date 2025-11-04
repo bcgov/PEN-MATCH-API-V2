@@ -2,8 +2,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.database.cosmos_client import CosmosDBClient
-from app.core.student_embedding import StudentEmbedding
+from database.cosmos_client import CosmosDBClient
+from core.student_embedding import StudentEmbedding
 
 class CosmosTestSuite:
     def __init__(self):

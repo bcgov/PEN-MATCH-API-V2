@@ -1,8 +1,8 @@
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-from app.core.student_api import StudentAPI
-from app.core.student_embedding import StudentEmbedding
-from app.database.cosmos_client import CosmosDBClient
+from core.student_api import StudentAPI
+from core.student_embedding import StudentEmbedding
+from database.cosmos_client import CosmosDBClient
 
 class StudentWorkflow:
     def __init__(self):
@@ -29,7 +29,7 @@ class StudentWorkflow:
         query_embedding = self.embedding_service.generate_embedding(query_student)
         query_vec = np.array(query_embedding).reshape(1, -1)
         
-        best_match = None
+        best_match = None 
         best_score = 0
         
         for candidate in candidates:

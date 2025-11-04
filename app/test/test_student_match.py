@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.core.student_match import StudentWorkflow
+from core.student_match import StudentWorkflow
 
 def clear_cosmos_database():
     """Clear all content from Cosmos database"""

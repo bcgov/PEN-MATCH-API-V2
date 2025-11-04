@@ -28,4 +28,4 @@ HEALTHCHECK CMD curl --fail http://localhost:8000/health || exit 1
 WORKDIR /
 
 # # Run the FastAPI app using uvicorn
-CMD ["uvicorn", "app.run_api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

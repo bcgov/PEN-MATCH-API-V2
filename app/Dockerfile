@@ -1,10 +1,11 @@
-FROM python:3.13-slim-bookworm
+FROM python:3.11-slim-bookworm
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     gcc \
     g++ \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (dependency manager)
@@ -16,17 +17,17 @@ WORKDIR /app
 # Copy dependency files first for better caching
 COPY pyproject.toml uv.lock* ./
 
-# Install dependencies using uv or fallback to pip
-RUN uv sync --frozen --no-cache --no-dev || \
-    pip install --no-cache-dir \
+# Install dependencies with compatible versions
+RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
-    scikit-learn==1.3.2 \
-    numpy==1.24.3 \
+    scikit-learn==1.4.0 \
+    numpy==1.26.0 \
     requests==2.31.0 \
     azure-cosmos==4.5.1 \
     python-dotenv==1.0.0 \
-    pydantic==2.5.0
+    pydantic==2.5.0 \
+    pandas
 
 # Copy application code
 COPY . .

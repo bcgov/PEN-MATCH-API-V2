@@ -27,10 +27,17 @@ RUN pip install --no-cache-dir \
     azure-cosmos==4.5.1 \
     python-dotenv==1.0.0 \
     pydantic==2.5.0 \
-    pandas
+    pandas \
+    openai \
+    azure-identity \
+    azure-core \
+    python-multipart
 
 # Copy application code
 COPY . .
+
+# Create logs directory
+RUN mkdir -p app/logs
 
 # Expose port 8000 for FastAPI
 EXPOSE 8000

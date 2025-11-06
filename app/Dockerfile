@@ -60,13 +60,11 @@ EXPOSE 8000
 
 # Set environment variables for Azure App Service
 ENV PORT=8000
-ENV HOST=0.0.0.0
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Health check endpoint for Azure App Service
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+# HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+#     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the FastAPI app using uvicorn
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use the PORT environment variable that Azure provides
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

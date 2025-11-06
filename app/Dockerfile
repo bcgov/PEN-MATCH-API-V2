@@ -20,6 +20,7 @@ COPY pyproject.toml requirements.txt* ./
 RUN pip install --no-cache-dir \
     fastapi==0.104.1 \
     uvicorn[standard]==0.24.0 \
+    gunicorn \
     scikit-learn>=1.4.0 \
     numpy>=1.26.0 \
     pandas \
@@ -63,8 +64,5 @@ ENV PORT=8000
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-#     CMD curl -f http://localhost:8000/health || exit 1
-
-# Use the PORT environment variable that Azure provides
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use gunicorn with uvicorn workers for better production performance
+CMD gunicorn api.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --workers 1 --timeout 120

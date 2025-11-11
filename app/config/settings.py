@@ -17,6 +17,8 @@ class Settings:
             self.api_base_url = self.get_secret("API-BASE-URL")
             self.openai_api_key = self.get_secret("OPENAI-API-KEY")
             self.openai_api_base = self.get_secret("OPENAI-API-BASE", required=False)
+            self.openai_api_base_embedding = self.get_secret("OPENAI-API-BASE-EMBEDDING", required=False)
+            self.openai_api_base_4o_mini = self.get_secret("OPENAI-API-BASE-4O-MINI", required=False)
             self.cosmos_endpoint = self.get_secret("COSMOS-ENDPOINT")
             self.cosmos_key = self.get_secret("COSMOS-KEY")
             

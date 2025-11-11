@@ -6,11 +6,11 @@ from config.settings import settings
 class StudentAPI:
     def __init__(self):
         # Configure OpenAI client
-        if settings.openai_api_base:
+        if settings.openai_api_base_embedding:
             self.openai_client = AzureOpenAI(
                 api_key=settings.openai_api_key,
                 api_version="2023-05-15",
-                azure_endpoint=settings.openai_api_base
+                azure_endpoint=settings.openai_api_base_embedding
             )
         else:
             self.openai_client = OpenAI(api_key=settings.openai_api_key)

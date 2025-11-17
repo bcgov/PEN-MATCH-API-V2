@@ -12,11 +12,11 @@ class EmbeddingImportService:
     async def _get_db_connection(self):
         """Get database connection"""
         return await asyncpg.connect(
-            host=settings.postgres_host,
-            port=settings.postgres_port,
-            user=settings.postgres_user,
-            password=settings.postgres_password,
-            database=settings.postgres_db
+            host=settings.postgres-host,
+            port=settings.postgres-port,
+            user=settings.postgres-user,
+            password=settings.postgres-password,
+            database=settings.postgres-db
         )
     
     def _fetch_students_page(self, page, page_size):

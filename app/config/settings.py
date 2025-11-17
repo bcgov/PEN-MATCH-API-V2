@@ -21,6 +21,11 @@ class Settings:
             self.openai_api_base_4o_mini = self.get_secret("OPENAI-API-BASE-4O-MINI", required=False)
             self.cosmos_endpoint = self.get_secret("COSMOS-ENDPOINT")
             self.cosmos_key = self.get_secret("COSMOS-KEY")
+            self.postgres_host = self.get_secret("postgres-host")
+            self.postgres_port = self.get_secret("postgres-port")
+            self.postgres_user = self.get_secret("postgres-user")
+            self.postgres_password = self.get_secret("postgres-password")
+            self.postgres_db = self.get_secret("postgres-db")
             
         else:
             # Fallback to environment variables

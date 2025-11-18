@@ -73,14 +73,14 @@ class EmbeddingImportService:
                 print(f"Inserting embedding to database for student {student_id}...")
                 student_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(student_id)))
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-                await conn.execute(
-                    """INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding) 
-                       VALUES ($1, $2) 
-                       ON CONFLICT (student_id) DO UPDATE SET 
-                       embedding = EXCLUDED.embedding""",
-                    student_uuid,
-                    embedding_str
-                )
+                await conn.execute("""
+                    INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding, status_code, create_user, update_user)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (student_id) DO UPDATE SET
+                    embedding = EXCLUDED.embedding,
+                    update_user = EXCLUDED.update_user,
+                    update_date = now()
+                """, student_uuid, embedding_str, 'A', 'system', 'system')
                 processed += 1
                 print(f"Successfully inserted embedding for student {student_id}")
                 

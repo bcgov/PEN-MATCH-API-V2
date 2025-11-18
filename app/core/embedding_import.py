@@ -70,13 +70,14 @@ class EmbeddingImportService:
                 
                 # Insert to database
                 print(f"Inserting embedding to database for student {student_id}...")
+                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 await conn.execute(
-                    """INSERT INTO student_embeddings (student_id, embedding) 
+                    """INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding) 
                        VALUES ($1, $2) 
                        ON CONFLICT (student_id) DO UPDATE SET 
                        embedding = EXCLUDED.embedding""",
                     student_id,
-                    embedding
+                    embedding_str
                 )
                 processed += 1
                 print(f"Successfully inserted embedding for student {student_id}")

@@ -33,6 +33,8 @@ class EmbeddingImportService:
         """Fetch students from database for a specific batch"""
         print(f"Fetching students from database - Offset {offset}, Batch size {batch_size}")
         try:
+            # Use a consistent ordering - try by creation time or a sequence field
+            # If no create_date, fall back to pen or other consistent field
             query = """
                 SELECT student_id, 
                        COALESCE(pen, 'NULL') as pen,
@@ -45,14 +47,19 @@ class EmbeddingImportService:
                        COALESCE(mincode, 'NULL') as mincode,
                        COALESCE(local_id, 'NULL') as local_id
                 FROM "api_pen_match_v2".student 
-                ORDER BY student_id ASC
+                ORDER BY create_date ASC, student_id ASC
                 LIMIT $1 OFFSET $2
             """
+            
+            # Log the exact query for DBeaver testing
+            print(f"Query: {query}")
+            print(f"Parameters: LIMIT {batch_size} OFFSET {offset}")
+            
             rows = await conn.fetch(query, batch_size, offset)
             
             # Convert rows to list of dictionaries
             students = []
-            for row in rows:
+            for i, row in enumerate(rows):
                 student = {
                     "student_id": row["student_id"],  # Keep original UUID
                     "pen": row["pen"],
@@ -66,14 +73,55 @@ class EmbeddingImportService:
                     "localID": row["local_id"]
                 }
                 students.append(student)
-                print(f"Fetched student: {student['student_id']} - {student['pen']} - {student['legalFirstName']} {student['legalLastName']}")
+                print(f"Row {offset + i + 1}: {student['student_id']} - PEN: {student['pen']} - Name: {student['legalFirstName']} {student['legalLastName']}")
             
             student_count = len(students)
             print(f"Database fetch successful - Retrieved {student_count} students from offset {offset}")
             return students
         except Exception as e:
             print(f"Database fetch failed for offset {offset}: {e}")
-            raise
+            # Try alternative ordering if create_date doesn't exist
+            try:
+                print("Trying alternative query without create_date...")
+                query_alt = """
+                    SELECT student_id, 
+                           COALESCE(pen, 'NULL') as pen,
+                           COALESCE(legal_first_name, 'NULL') as legal_first_name,
+                           COALESCE(legal_last_name, 'NULL') as legal_last_name,
+                           COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
+                           COALESCE(dob::text, 'NULL') as dob,
+                           COALESCE(sex_code, 'NULL') as sex_code,
+                           COALESCE(postal_code, 'NULL') as postal_code,
+                           COALESCE(mincode, 'NULL') as mincode,
+                           COALESCE(local_id, 'NULL') as local_id
+                    FROM "api_pen_match_v2".student 
+                    ORDER BY pen ASC, student_id ASC
+                    LIMIT $1 OFFSET $2
+                """
+                print(f"Alternative query: {query_alt}")
+                rows = await conn.fetch(query_alt, batch_size, offset)
+                
+                students = []
+                for i, row in enumerate(rows):
+                    student = {
+                        "student_id": row["student_id"],
+                        "pen": row["pen"],
+                        "legalFirstName": row["legal_first_name"],
+                        "legalLastName": row["legal_last_name"],
+                        "legalMiddleNames": row["legal_middle_names"],
+                        "dob": row["dob"],
+                        "sexCode": row["sex_code"],
+                        "postalCode": row["postal_code"],
+                        "mincode": row["mincode"],
+                        "localID": row["local_id"]
+                    }
+                    students.append(student)
+                    print(f"Row {offset + i + 1}: {student['student_id']} - PEN: {student['pen']}")
+                
+                return students
+            except Exception as e2:
+                print(f"Alternative query also failed: {e2}")
+                raise e
     
     async def _process_and_insert_students(self, conn, students):
         """Process students and insert embeddings to database"""
@@ -103,15 +151,12 @@ class EmbeddingImportService:
                 
                 # Insert to database using original student_id
                 print(f"Inserting embedding to database for student {student_id}...")
-                embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 await conn.execute("""
-                    INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding, status_code, create_user, update_user)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding)
+                    VALUES ($1, $2)
                     ON CONFLICT (student_id) DO UPDATE SET
-                    embedding = EXCLUDED.embedding,
-                    update_user = EXCLUDED.update_user,
-                    update_date = now()
-                """, student_id, embedding_str, 'A', 'system', 'system')
+                    embedding = EXCLUDED.embedding
+                """, student_id, embedding)
                 processed += 1
                 print(f"Successfully inserted embedding for student {student_id}")
                 

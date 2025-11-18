@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import asyncpg
 import ssl
 from core.student_embedding import StudentEmbedding
@@ -70,13 +71,14 @@ class EmbeddingImportService:
                 
                 # Insert to database
                 print(f"Inserting embedding to database for student {student_id}...")
+                student_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(student_id)))
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 await conn.execute(
                     """INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding) 
                        VALUES ($1, $2) 
                        ON CONFLICT (student_id) DO UPDATE SET 
                        embedding = EXCLUDED.embedding""",
-                    student_id,
+                    student_uuid,
                     embedding_str
                 )
                 processed += 1

@@ -34,10 +34,18 @@ class EmbeddingImportService:
         print(f"Fetching students from database - Offset {offset}, Batch size {batch_size}")
         try:
             query = """
-                SELECT student_id, pen, legal_first_name, legal_last_name, legal_middle_names, 
-                       dob, sex_code, postal_code, mincode, local_id
+                SELECT student_id, 
+                       COALESCE(pen, 'NULL') as pen,
+                       COALESCE(legal_first_name, 'NULL') as legal_first_name,
+                       COALESCE(legal_last_name, 'NULL') as legal_last_name,
+                       COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
+                       COALESCE(dob::text, 'NULL') as dob,
+                       COALESCE(sex_code, 'NULL') as sex_code,
+                       COALESCE(postal_code, 'NULL') as postal_code,
+                       COALESCE(mincode, 'NULL') as mincode,
+                       COALESCE(local_id, 'NULL') as local_id
                 FROM "api_pen_match_v2".student 
-                ORDER BY student_id
+                ORDER BY student_id ASC
                 LIMIT $1 OFFSET $2
             """
             rows = await conn.fetch(query, batch_size, offset)
@@ -51,13 +59,14 @@ class EmbeddingImportService:
                     "legalFirstName": row["legal_first_name"],
                     "legalLastName": row["legal_last_name"],
                     "legalMiddleNames": row["legal_middle_names"],
-                    "dob": str(row["dob"]) if row["dob"] else None,
+                    "dob": row["dob"],
                     "sexCode": row["sex_code"],
                     "postalCode": row["postal_code"],
                     "mincode": row["mincode"],
                     "localID": row["local_id"]
                 }
                 students.append(student)
+                print(f"Fetched student: {student['student_id']} - {student['pen']} - {student['legalFirstName']} {student['legalLastName']}")
             
             student_count = len(students)
             print(f"Database fetch successful - Retrieved {student_count} students from offset {offset}")

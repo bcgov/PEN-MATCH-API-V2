@@ -1,16 +1,13 @@
 import asyncio
-import uuid
 import asyncpg
 import ssl
 from core.student_embedding import StudentEmbedding
-from core.student_api import StudentAPI
 from config.settings import settings
 
 class EmbeddingImportService:
     def __init__(self):
         print("Initializing EmbeddingImportService...")
         self.student_embedding = StudentEmbedding()
-        self.student_api = StudentAPI()
         print("EmbeddingImportService initialized successfully")
         
     async def _get_db_connection(self):
@@ -32,17 +29,41 @@ class EmbeddingImportService:
             print(f"Failed to connect to database: {e}")
             raise
     
-    def _fetch_students_page(self, page, page_size):
-        """Fetch students from API for a specific page"""
-        print(f"Fetching students from API - Page {page}, Size {page_size}")
+    async def _fetch_students_batch(self, conn, offset, batch_size):
+        """Fetch students from database for a specific batch"""
+        print(f"Fetching students from database - Offset {offset}, Batch size {batch_size}")
         try:
-            # student_api.get_student_page returns the content directly (list of students)
-            students = self.student_api.get_student_page(page=page, size=page_size)
-            student_count = len(students) if students else 0
-            print(f"API fetch successful - Retrieved {student_count} students from page {page}")
+            query = """
+                SELECT student_id, pen, legal_first_name, legal_last_name, legal_middle_names, 
+                       dob, sex_code, postal_code, mincode, local_id
+                FROM "api_pen_match_v2".student 
+                ORDER BY student_id
+                LIMIT $1 OFFSET $2
+            """
+            rows = await conn.fetch(query, batch_size, offset)
+            
+            # Convert rows to list of dictionaries
+            students = []
+            for row in rows:
+                student = {
+                    "student_id": row["student_id"],  # Keep original UUID
+                    "pen": row["pen"],
+                    "legalFirstName": row["legal_first_name"],
+                    "legalLastName": row["legal_last_name"],
+                    "legalMiddleNames": row["legal_middle_names"],
+                    "dob": str(row["dob"]) if row["dob"] else None,
+                    "sexCode": row["sex_code"],
+                    "postalCode": row["postal_code"],
+                    "mincode": row["mincode"],
+                    "localID": row["local_id"]
+                }
+                students.append(student)
+            
+            student_count = len(students)
+            print(f"Database fetch successful - Retrieved {student_count} students from offset {offset}")
             return students
         except Exception as e:
-            print(f"API fetch failed for page {page}: {e}")
+            print(f"Database fetch failed for offset {offset}: {e}")
             raise
     
     async def _process_and_insert_students(self, conn, students):
@@ -56,22 +77,23 @@ class EmbeddingImportService:
         
         for i, student in enumerate(students, 1):
             try:
-                # Get student ID (pen is the primary identifier in the API)
-                student_id = student.get("pen") or student.get("studentID")
+                # Use original student_id from database
+                student_id = student.get("student_id")
+                pen = student.get("pen")
+                
                 if not student_id:
-                    print(f"Skipping student {i}/{len(students)} - No valid ID found")
+                    print(f"Skipping student {i}/{len(students)} - No valid student_id found")
                     continue
                     
-                print(f"Processing student {i}/{len(students)} - ID: {student_id}")
+                print(f"Processing student {i}/{len(students)} - ID: {student_id}, PEN: {pen}")
                 
-                # Generate embedding
+                # Generate embedding using only specified fields
                 print(f"Generating embedding for student {student_id}...")
                 embedding = self.student_embedding.generate_embedding(student)
                 print(f"Embedding generated successfully for student {student_id}")
                 
-                # Insert to database
+                # Insert to database using original student_id
                 print(f"Inserting embedding to database for student {student_id}...")
-                student_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, str(student_id)))
                 embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                 await conn.execute("""
                     INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding, status_code, create_user, update_user)
@@ -80,29 +102,29 @@ class EmbeddingImportService:
                     embedding = EXCLUDED.embedding,
                     update_user = EXCLUDED.update_user,
                     update_date = now()
-                """, student_uuid, embedding_str, 'A', 'system', 'system')
+                """, student_id, embedding_str, 'A', 'system', 'system')
                 processed += 1
                 print(f"Successfully inserted embedding for student {student_id}")
                 
             except Exception as e:
-                print(f"Error processing student {student.get('pen', student.get('studentID', 'unknown'))}: {e}")
+                print(f"Error processing student {student.get('student_id', 'unknown')}: {e}")
                 continue
         
         print(f"Embedding processing completed - {processed}/{len(students)} students processed successfully")
         return processed
     
-    async def import_one_page(self, page=1, page_size=100):
-        """Import one page of students with embeddings"""
-        print(f"Starting import for page {page} with page size {page_size}")
+    async def import_one_batch(self, offset=0, batch_size=100):
+        """Import one batch of students with embeddings"""
+        print(f"Starting import for batch at offset {offset} with batch size {batch_size}")
         
         conn = await self._get_db_connection()
         
         try:
-            # Fetch students from API
-            students = self._fetch_students_page(page, page_size)
+            # Fetch students from database
+            students = await self._fetch_students_batch(conn, offset, batch_size)
             
             if not students:
-                print(f"No students found on page {page} - Import completed")
+                print(f"No students found at offset {offset} - Import completed")
                 return 0
             
             print(f"Starting database import for {len(students)} students...")
@@ -111,48 +133,48 @@ class EmbeddingImportService:
             processed = await self._process_and_insert_students(conn, students)
             
             if processed == len(students):
-                print(f"Page {page} import completed successfully - {processed}/{len(students)} students processed")
+                print(f"Batch at offset {offset} import completed successfully - {processed}/{len(students)} students processed")
             else:
-                print(f"Page {page} import completed with errors - {processed}/{len(students)} students processed successfully")
+                print(f"Batch at offset {offset} import completed with errors - {processed}/{len(students)} students processed successfully")
             
             return processed
             
         except Exception as e:
-            print(f"Page {page} import failed: {e}")
+            print(f"Batch at offset {offset} import failed: {e}")
             raise
         finally:
             await conn.close()
             print("Database connection closed")
     
-    async def import_all_pages(self, page_size=100):
-        """Import all pages of students using import_one_page"""
-        print(f"Starting import for all pages with page size {page_size}")
+    async def import_all_students(self, batch_size=100):
+        """Import all students using batches"""
+        print(f"Starting import for all students with batch size {batch_size}")
         
-        page = 1
+        offset = 0
         total_processed = 0
         
         while True:
             try:
-                print(f"Processing page {page}...")
+                print(f"Processing batch at offset {offset}...")
                 
-                # Use import_one_page for each page
-                processed = await self.import_one_page(page, page_size)
+                # Import one batch
+                processed = await self.import_one_batch(offset, batch_size)
                 
-                if processed == 0:  # No students found, end of pages
-                    print(f"No more students found at page {page} - All pages import completed")
+                if processed == 0:  # No students found, end of data
+                    print(f"No more students found at offset {offset} - All students import completed")
                     break
                 
                 total_processed += processed
-                print(f"Page {page} completed - Running total: {total_processed} students processed")
-                page += 1
+                print(f"Batch at offset {offset} completed - Running total: {total_processed} students processed")
+                offset += batch_size
                 
             except Exception as e:
-                print(f"Error processing page {page}: {e}")
-                print(f"Skipping page {page} and continuing with next page...")
-                page += 1
+                print(f"Error processing batch at offset {offset}: {e}")
+                print(f"Skipping batch at offset {offset} and continuing with next batch...")
+                offset += batch_size
                 continue
         
-        print(f"All pages import completed successfully - Total: {total_processed} students processed")
+        print(f"All students import completed successfully - Total: {total_processed} students processed")
         return total_processed
 
 # Run the import
@@ -167,23 +189,23 @@ if __name__ == "__main__":
         try:
             if len(sys.argv) > 1:
                 if sys.argv[1] == "all":
-                    # Import all pages
-                    page_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
-                    print(f"Mode: Import all pages with page size {page_size}")
-                    result = await service.import_all_pages(page_size)
+                    # Import all students
+                    batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+                    print(f"Mode: Import all students with batch size {batch_size}")
+                    result = await service.import_all_students(batch_size)
                     print(f"Final result: {result} total students processed")
                 else:
-                    # Import specific page
-                    page = int(sys.argv[1])
-                    page_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
-                    print(f"Mode: Import single page {page} with page size {page_size}")
-                    result = await service.import_one_page(page, page_size)
-                    print(f"Final result: {result} students processed from page {page}")
+                    # Import specific batch
+                    offset = int(sys.argv[1])
+                    batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+                    print(f"Mode: Import single batch at offset {offset} with batch size {batch_size}")
+                    result = await service.import_one_batch(offset, batch_size)
+                    print(f"Final result: {result} students processed from offset {offset}")
             else:
-                # Default: import page 1 with 100 students
-                print("Mode: Default import (page 1, size 100)")
-                result = await service.import_one_page()
-                print(f"Final result: {result} students processed from page 1")
+                # Default: import first batch with 100 students
+                print("Mode: Default import (offset 0, size 100)")
+                result = await service.import_one_batch()
+                print(f"Final result: {result} students processed from offset 0")
                 
             print("Embedding Import Service completed successfully")
             

@@ -1,6 +1,6 @@
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-from core.student_api import StudentAPI
+from database.student_api import StudentAPI
 from core.student_embedding import StudentEmbedding
 from database.cosmos_client import CosmosDBClient
 

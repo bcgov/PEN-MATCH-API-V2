@@ -8,16 +8,15 @@ class PGVectorSearchService:
         self.student_embedding = StudentEmbedding()
         self.db = PostgreSQLManager()
     
-    async def search_students(self, query: Dict[str, Any], limit: int = 20) -> Dict[str, Any]:
+    async def search_students(self, query: Dict[str, Any]) -> Dict[str, Any]:
         """
         Search for similar students using pgvector similarity
         
         Args:
             query: Student search fields
-            limit: Maximum number of results to return (default 20 for potential candidates)
         
         Returns:
-            Dictionary with perfect matches and potential candidates
+            Dictionary with perfect matches and potential candidates (all results above threshold)
         """
         
         # Generate embedding for query
@@ -31,10 +30,10 @@ class PGVectorSearchService:
                 
                 # Define thresholds
                 PERFECT_MATCH_THRESHOLD = 0.95
-                POTENTIAL_CANDIDATE_THRESHOLD = 0.80  # Lowered to catch more candidates
-                MIN_THRESHOLD = 0.70  # Don't return anything below 70% similarity
+                POTENTIAL_CANDIDATE_THRESHOLD = 0.80
+                MIN_THRESHOLD = 0.70  # Minimum threshold to consider
                 
-                # Search using cosine similarity with minimum threshold filter
+                # Search using cosine similarity - NO LIMIT to get ALL candidates above threshold
                 search_query = """
                     SELECT 
                         s.student_id,
@@ -51,12 +50,11 @@ class PGVectorSearchService:
                     FROM "api_pen_match_v2".student_embeddings se
                     JOIN "api_pen_match_v2".student s ON se.student_id = s.student_id
                     WHERE se.status_code = 'A'
-                    AND (1 - (se.embedding::vector <=> $1::vector)) >= $3
-                    ORDER BY se.embedding::vector <=> $1::vector
-                    LIMIT $2
+                    AND (1 - (se.embedding::vector <=> $1::vector)) >= $2
+                    ORDER BY (1 - (se.embedding::vector <=> $1::vector)) DESC
                 """
                 
-                rows = await conn.fetch(search_query, embedding_str, limit, MIN_THRESHOLD)
+                rows = await conn.fetch(search_query, embedding_str, MIN_THRESHOLD)
                 
                 all_results = [{
                     "pen": row["pen"],
@@ -95,7 +93,7 @@ if __name__ == "__main__":
     async def test():
         service = PGVectorSearchService()
         
-        # Search query with 2+ fields
+        # Search query with actual data
         query = {
                 "pen": "",
                 "legalFirstName": "",
@@ -108,7 +106,8 @@ if __name__ == "__main__":
                 "localID": ""
         }
         
-        results = await service.search_students(query, limit=20)
+        print("Searching for ALL candidates above threshold...")
+        results = await service.search_students(query)
         
         print(f"Query: {results['query']}")
         print(f"Perfect Match Threshold: {results['thresholds']['perfect_match']}")
@@ -132,10 +131,10 @@ if __name__ == "__main__":
             print(f"   Similarity Score: {candidate['similarity_score']:.4f}")
             print()
         
-        # Show all results with scores for debugging
-        print(f"\n=== ALL RESULTS (Debug) ===")
-        all_results = results['perfect_matches'] + results['potential_candidates']
-        for i, result in enumerate(all_results, 1):
-            print(f"{i}. Score: {result['similarity_score']:.4f} - {result['legalFirstName']} {result['legalLastName']}")
+        # Summary
+        print(f"\n=== SUMMARY ===")
+        print(f"Perfect Matches (≥95%): {len(results['perfect_matches'])}")
+        print(f"Potential Candidates (80-94%): {len(results['potential_candidates'])}")
+        print(f"Total Candidates (≥70%): {results['total_results']}")
     
     asyncio.run(test())

@@ -29,7 +29,12 @@ class PGVectorSearchService:
             async with self.db.connection_pool.acquire() as conn:
                 embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
                 
-                # Search using cosine similarity
+                # Define thresholds
+                PERFECT_MATCH_THRESHOLD = 0.95
+                POTENTIAL_CANDIDATE_THRESHOLD = 0.80  # Lowered to catch more candidates
+                MIN_THRESHOLD = 0.70  # Don't return anything below 70% similarity
+                
+                # Search using cosine similarity with minimum threshold filter
                 search_query = """
                     SELECT 
                         s.student_id,
@@ -46,11 +51,12 @@ class PGVectorSearchService:
                     FROM "api_pen_match_v2".student_embeddings se
                     JOIN "api_pen_match_v2".student s ON se.student_id = s.student_id
                     WHERE se.status_code = 'A'
+                    AND (1 - (se.embedding::vector <=> $1::vector)) >= $3
                     ORDER BY se.embedding::vector <=> $1::vector
                     LIMIT $2
                 """
                 
-                rows = await conn.fetch(search_query, embedding_str, limit)
+                rows = await conn.fetch(search_query, embedding_str, limit, MIN_THRESHOLD)
                 
                 all_results = [{
                     "pen": row["pen"],
@@ -65,10 +71,6 @@ class PGVectorSearchService:
                     "similarity_score": float(row["similarity_score"])
                 } for row in rows]
                 
-                # Define thresholds
-                PERFECT_MATCH_THRESHOLD = 0.95  # 95% similarity = perfect match
-                POTENTIAL_CANDIDATE_THRESHOLD = 0.7  # 70% similarity = potential candidate
-                
                 # Categorize results
                 perfect_matches = [r for r in all_results if r["similarity_score"] >= PERFECT_MATCH_THRESHOLD]
                 potential_candidates = [r for r in all_results if POTENTIAL_CANDIDATE_THRESHOLD <= r["similarity_score"] < PERFECT_MATCH_THRESHOLD]
@@ -77,7 +79,8 @@ class PGVectorSearchService:
                     "query": query,
                     "thresholds": {
                         "perfect_match": PERFECT_MATCH_THRESHOLD,
-                        "potential_candidate": POTENTIAL_CANDIDATE_THRESHOLD
+                        "potential_candidate": POTENTIAL_CANDIDATE_THRESHOLD,
+                        "minimum": MIN_THRESHOLD
                     },
                     "perfect_matches": perfect_matches,
                     "potential_candidates": potential_candidates,
@@ -94,8 +97,15 @@ if __name__ == "__main__":
         
         # Search query with 2+ fields
         query = {
-            "legalFirstName": "EESHVIR",
-            "legalLastName": "DENEAULT"
+                "pen": "",
+                "legalFirstName": "",
+                "legalLastName": "",
+                "legalMiddleNames": "",
+                "dob": "",
+                "sexCode": "",
+                "postalCode": "",
+                "mincode": "",
+                "localID": ""
         }
         
         results = await service.search_students(query, limit=20)
@@ -103,6 +113,7 @@ if __name__ == "__main__":
         print(f"Query: {results['query']}")
         print(f"Perfect Match Threshold: {results['thresholds']['perfect_match']}")
         print(f"Potential Candidate Threshold: {results['thresholds']['potential_candidate']}")
+        print(f"Minimum Threshold: {results['thresholds']['minimum']}")
         print(f"Total Results Found: {results['total_results']}")
         
         print(f"\n=== PERFECT MATCHES ({len(results['perfect_matches'])}) ===")
@@ -120,5 +131,11 @@ if __name__ == "__main__":
             print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}, LocalID: {candidate['localID']}")
             print(f"   Similarity Score: {candidate['similarity_score']:.4f}")
             print()
+        
+        # Show all results with scores for debugging
+        print(f"\n=== ALL RESULTS (Debug) ===")
+        all_results = results['perfect_matches'] + results['potential_candidates']
+        for i, result in enumerate(all_results, 1):
+            print(f"{i}. Score: {result['similarity_score']:.4f} - {result['legalFirstName']} {result['legalLastName']}")
     
     asyncio.run(test())

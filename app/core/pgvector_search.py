@@ -45,7 +45,7 @@ class PGVectorSearchService:
                         s.sex_code,
                         s.postal_code,
                         s.mincode,
-                        s.local_id,
+                        COALESCE(LPAD(s.local_id::text, 8, '0'), 'NULL') as local_id,
                         (1 - (se.embedding::vector <=> $1::vector)) as similarity_score
                     FROM "api_pen_match_v2".student_embeddings se
                     JOIN "api_pen_match_v2".student s ON se.student_id = s.student_id
@@ -108,13 +108,12 @@ if __name__ == "__main__":
         
         print("Searching for ALL candidates above threshold...")
         results = await service.search_students(query)
-        
-        print(f"Query: {results['query']}")
-        print(f"Perfect Match Threshold: {results['thresholds']['perfect_match']}")
-        print(f"Potential Candidate Threshold: {results['thresholds']['potential_candidate']}")
-        print(f"Minimum Threshold: {results['thresholds']['minimum']}")
-        print(f"Total Results Found: {results['total_results']}")
-        
+
+        # Summary
+        print(f"\n=== SUMMARY ===")
+        print(f"Perfect Matches (≥95%): {len(results['perfect_matches'])}")
+        print(f"Potential Candidates (80-94%): {len(results['potential_candidates'])}")
+    
         print(f"\n=== PERFECT MATCHES ({len(results['perfect_matches'])}) ===")
         for i, match in enumerate(results['perfect_matches'], 1):
             print(f"{i}. {match['legalFirstName']} {match['legalLastName']} {match['legalMiddleNames'] or ''}")
@@ -124,17 +123,12 @@ if __name__ == "__main__":
             print()
         
         print(f"\n=== POTENTIAL CANDIDATES ({len(results['potential_candidates'])}) ===")
-        for i, candidate in enumerate(results['potential_candidates'], 1):
+        for i, candidate in enumerate(results['potential_candidates'][:10], 1):
             print(f"{i}. {candidate['legalFirstName']} {candidate['legalLastName']} {candidate['legalMiddleNames'] or ''}")
             print(f"   PEN: {candidate['pen']}, DOB: {candidate['dob']}, Sex: {candidate['sexCode']}")
             print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}, LocalID: {candidate['localID']}")
             print(f"   Similarity Score: {candidate['similarity_score']:.4f}")
             print()
         
-        # Summary
-        print(f"\n=== SUMMARY ===")
-        print(f"Perfect Matches (≥95%): {len(results['perfect_matches'])}")
-        print(f"Potential Candidates (80-94%): {len(results['potential_candidates'])}")
-        print(f"Total Candidates (≥70%): {results['total_results']}")
-    
+
     asyncio.run(test())

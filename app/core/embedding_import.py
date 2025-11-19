@@ -83,7 +83,7 @@ class EmbeddingImportService:
                        COALESCE(legal_last_name, 'NULL') as legal_last_name, COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
                        COALESCE(dob::text, 'NULL') as dob, COALESCE(sex_code, 'NULL') as sex_code,
                        COALESCE(postal_code, 'NULL') as postal_code, COALESCE(mincode, 'NULL') as mincode,
-                       COALESCE(local_id, 'NULL') as local_id
+                       COALESCE(LPAD(local_id::text, 8, '0'), 'NULL') as local_id
                 FROM "api_pen_match_v2".student ORDER BY student_id ASC LIMIT $1 OFFSET $2
             """
             rows = await conn.fetch(query, batch_size, offset)

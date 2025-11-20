@@ -48,6 +48,7 @@ class StudentEmbedding:
                 input=text,
                 model="text-embedding-3-large"
             )
+            print(f"DEBUG: Generated embedding with {len(response.data[0].embedding)} dimensions")
             return response.data[0].embedding
         except Exception as e:
             raise ValueError(f"Failed to generate embedding: {str(e)}")

@@ -8,8 +8,8 @@ class StudentEmbedding:
         if settings.openai_api_base_embedding:
             self.openai_client = AzureOpenAI(
                 api_key=settings.openai_api_key,
-                api_version="2023-05-15",
-                azure_endpoint=settings.openai_api_base_embedding
+                api_version="2025-01-01",
+                azure_endpoint=settings.openai_api_base_embedding_3
             )
         else:
             self.openai_client = OpenAI(api_key=settings.openai_api_key)

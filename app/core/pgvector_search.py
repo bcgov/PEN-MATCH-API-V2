@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import List, Dict, Any
 from core.student_embedding import StudentEmbedding
 from database.postgresql import PostgreSQLManager
@@ -19,8 +20,10 @@ class PGVectorSearchService:
             Dictionary with perfect matches and potential candidates
         """
         
-        # Generate embedding for query
+        # Time embedding generation
+        embedding_start_time = time.time()
         query_embedding = self.student_embedding.generate_embedding(query)
+        embedding_time = time.time() - embedding_start_time
         
         await self.db.create_pool()
         
@@ -33,7 +36,8 @@ class PGVectorSearchService:
                 MIN_THRESHOLD = 0.50  # Lower threshold for potential candidates
                 MAX_POTENTIAL_CANDIDATES = 300
                 
-                # First check for perfect matches
+                # Time perfect match search
+                perfect_match_start_time = time.time()
                 perfect_match_query = """
                     SELECT 
                         s.student_id,
@@ -55,6 +59,7 @@ class PGVectorSearchService:
                 """
                 
                 perfect_matches_rows = await conn.fetch(perfect_match_query, embedding_str, PERFECT_MATCH_THRESHOLD)
+                perfect_match_time = time.time() - perfect_match_start_time
                 
                 perfect_matches = [{
                     "pen": row["pen"],
@@ -71,7 +76,10 @@ class PGVectorSearchService:
                 
                 # If no perfect matches, get top 300 potential candidates
                 potential_candidates = []
+                potential_candidates_time = 0.0
+                
                 if not perfect_matches:
+                    potential_candidates_start_time = time.time()
                     potential_candidates_query = """
                         SELECT 
                             s.student_id,
@@ -94,6 +102,7 @@ class PGVectorSearchService:
                     """
                     
                     potential_rows = await conn.fetch(potential_candidates_query, embedding_str, MIN_THRESHOLD, MAX_POTENTIAL_CANDIDATES)
+                    potential_candidates_time = time.time() - potential_candidates_start_time
                     
                     potential_candidates = [{
                         "pen": row["pen"],
@@ -108,6 +117,9 @@ class PGVectorSearchService:
                         "similarity_score": float(row["similarity_score"])
                     } for row in potential_rows]
                 
+                # Calculate total search time
+                total_search_time = perfect_match_time + potential_candidates_time
+                
                 return {
                     "query": query,
                     "thresholds": {
@@ -117,7 +129,14 @@ class PGVectorSearchService:
                     "perfect_matches": perfect_matches,
                     "potential_candidates": potential_candidates,
                     "total_perfect_matches": len(perfect_matches),
-                    "total_potential_candidates": len(potential_candidates)
+                    "total_potential_candidates": len(potential_candidates),
+                    "performance": {
+                        "embedding_time_seconds": round(embedding_time, 4),
+                        "perfect_match_search_time_seconds": round(perfect_match_time, 4),
+                        "potential_candidates_search_time_seconds": round(potential_candidates_time, 4),
+                        "total_search_time_seconds": round(total_search_time, 4),
+                        "total_processing_time_seconds": round(embedding_time + total_search_time, 4)
+                    }
                 }
                 
         finally:
@@ -143,6 +162,15 @@ if __name__ == "__main__":
         
         print("Searching for students...")
         results = await service.search_students(query)
+
+        # Performance metrics
+        perf = results['performance']
+        print(f"\n=== PERFORMANCE METRICS ===")
+        print(f"Embedding Generation: {perf['embedding_time_seconds']} seconds")
+        print(f"Perfect Match Search: {perf['perfect_match_search_time_seconds']} seconds")
+        print(f"Potential Candidates Search: {perf['potential_candidates_search_time_seconds']} seconds")
+        print(f"Total Search Time: {perf['total_search_time_seconds']} seconds")
+        print(f"Total Processing Time: {perf['total_processing_time_seconds']} seconds")
 
         # Summary
         print(f"\n=== SUMMARY ===")

@@ -30,7 +30,7 @@ class PGVectorSearchService:
                 
                 # Define thresholds
                 PERFECT_MATCH_THRESHOLD = 0.95
-                POTENTIAL_CANDIDATE_THRESHOLD = 0.80
+                POTENTIAL_CANDIDATE_THRESHOLD = 0.85
                 MIN_THRESHOLD = 0.70  # Minimum threshold to consider
                 
                 # Search using cosine similarity - NO LIMIT to get ALL candidates above threshold
@@ -112,7 +112,7 @@ if __name__ == "__main__":
         # Summary
         print(f"\n=== SUMMARY ===")
         print(f"Perfect Matches (≥95%): {len(results['perfect_matches'])}")
-        print(f"Potential Candidates (80-94%): {len(results['potential_candidates'])}")
+        print(f"Potential Candidates (85-94%): {len(results['potential_candidates'])}")
     
         print(f"\n=== PERFECT MATCHES ({len(results['perfect_matches'])}) ===")
         for i, match in enumerate(results['perfect_matches'], 1):

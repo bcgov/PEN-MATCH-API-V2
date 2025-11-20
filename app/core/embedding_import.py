@@ -187,6 +187,137 @@ class EmbeddingImportService:
         finally:
             await self.db.close()
 
+
+    async def import_name_embeddings(self, name_pairs: List[tuple]) -> int:
+        """Import embeddings for a list of (first_name, last_name) pairs"""
+        print(f"Starting import for {len(name_pairs)} name pairs")
+        print("Connecting to PostgreSQL database...")
+        
+        conn = await self.db.get_connection()
+        try:
+            processed = 0
+            
+            for i, (first_name, last_name) in enumerate(name_pairs, 1):
+                try:
+                    print(f"Processing name {i}/{len(name_pairs)} - {first_name} {last_name}")
+                    
+                    # Create a student object for embedding generation
+                    student = {
+                        "student_id": None,  # No specific student ID
+                        "pen": "NULL",
+                        "legalFirstName": first_name,
+                        "legalLastName": last_name,
+                        "legalMiddleNames": "NULL",
+                        "dob": "NULL",
+                        "sexCode": "NULL",
+                        "postalCode": "NULL",
+                        "mincode": "NULL",
+                        "localID": "NULL"
+                    }
+                    
+                    # Generate embedding
+                    embedding = self.student_embedding.generate_embedding(student)
+                    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                    
+                    # Insert into name_embeddings table (create if doesn't exist)
+                    await conn.execute("""
+                        CREATE TABLE IF NOT EXISTS "api_pen_match_v2".name_embeddings (
+                            id SERIAL PRIMARY KEY,
+                            first_name VARCHAR(255) NOT NULL,
+                            last_name VARCHAR(255) NOT NULL,
+                            embedding TEXT NOT NULL,
+                            status_code VARCHAR(1) DEFAULT 'A',
+                            create_date TIMESTAMP DEFAULT NOW(),
+                            create_user VARCHAR(100) DEFAULT 'system',
+                            update_date TIMESTAMP DEFAULT NOW(),
+                            update_user VARCHAR(100) DEFAULT 'system',
+                            UNIQUE(first_name, last_name)
+                        )
+                    """)
+                    
+                    # Insert or update the embedding
+                    await conn.execute("""
+                        INSERT INTO "api_pen_match_v2".name_embeddings 
+                        (first_name, last_name, embedding, status_code, create_user, update_user)
+                        VALUES ($1, $2, $3, $4, $5, $6) 
+                        ON CONFLICT (first_name, last_name) DO UPDATE SET
+                        embedding = EXCLUDED.embedding, 
+                        update_user = EXCLUDED.update_user, 
+                        update_date = NOW()
+                    """, first_name.strip(), last_name.strip(), embedding_str, 'A', 'system', 'system')
+                    
+                    processed += 1
+                    print(f"Successfully processed {first_name} {last_name}")
+                    
+                except Exception as e:
+                    print(f"Error processing {first_name} {last_name}: {e}")
+                    continue
+            
+            print(f"Name embedding import completed - {processed}/{len(name_pairs)} names processed")
+            return processed
+            
+        except Exception as e:
+            print(f"Name embedding import failed: {e}")
+            raise
+        finally:
+            await conn.close()
+
+
+if __name__ == "__main__":
+    import sys
+    
+    async def main():
+        print("Starting Embedding Import Service")
+        service = EmbeddingImportService()
+        
+        try:
+            if len(sys.argv) > 1:
+                if sys.argv[1] == "all":
+                    batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
+                    print(f"Mode: Import all students with batch size {batch_size}")
+                    result = await service.import_all_students(batch_size)
+                    print(f"Final result: {result} total students processed")
+                elif sys.argv[1] == "names":
+                    # Example name pairs
+                    name_pairs = [
+                        ("GURVINDER", "SINGH"),
+                        ("MICHAEL", "LEE"),
+                        ("MICHAEL", "KIM"),
+                        ("DAVID", "LEE"),
+                        ("MICHAEL", "WANG"),
+                        ("JENNIFER", "LEE"),
+                        ("MICHAEL", "LI"),
+                        ("ROBERT", "LEE"),
+                        ("DAVID", "WANG"),
+                        ("MICHAEL", "CHEN")
+                    ]
+                    print(f"Mode: Import name embeddings for {len(name_pairs)} name pairs")
+                    result = await service.import_name_embeddings(name_pairs)
+                    print(f"Final result: {result} name pairs processed")
+                else:
+                    offset = int(sys.argv[1])
+                    batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+                    print(f"Mode: Import single batch at offset {offset} with batch size {batch_size}")
+                    result = await service.import_one_batch(offset, batch_size)
+                    print(f"Final result: {result} students processed from offset {offset}")
+            else:
+                print("Mode: Default import (offset 0, size 100)")
+                result = await service.import_one_batch()
+                print(f"Final result: {result} students processed from offset 0")
+                
+            print("Embedding Import Service completed successfully")
+            
+        except Exception as e:
+            print(f"Embedding Import Service failed: {e}")
+            return 1
+        
+        return 0
+    
+    exit_code = asyncio.run(main())
+    exit(exit_code)
+
+
+
 if __name__ == "__main__":
     import sys
     

@@ -314,7 +314,6 @@ if __name__ == "__main__":
                 elif sys.argv[1] == "names":
                     # Target name pairs - could be hundreds of records for each
                     target_names = [
-                        ("GURVINDER", "SINGH"),
                         ("MICHAEL", "LEE"),
                         ("MICHAEL", "KIM"),
                         ("DAVID", "LEE"),
@@ -323,7 +322,9 @@ if __name__ == "__main__":
                         ("MICHAEL", "LI"),
                         ("ROBERT", "LEE"),
                         ("DAVID", "WANG"),
-                        ("MICHAEL", "CHEN")
+                        ("MICHAEL", "CHEN"),
+                        ("JAMES", "LEE")
+
                     ]
                     print(f"Mode: Import all student records matching {len(target_names)} name pairs")
                     result = await service.import_all_records_by_names(target_names)

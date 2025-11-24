@@ -245,14 +245,6 @@ if __name__ == "__main__":
         
         # Test with sample query - filled with actual data
         query = {
-            "legalFirstName": "MICHAEL", 
-            "legalLastName": "LEE", 
-            "legalMiddleNames": "RICHARD",
-            # Remove DOB filter for testing - may not exist in database
-            # "dob": "2001-02-10",  
-            "sexCode": "M",       
-            "postalCode": "V3N1H4",
-            "mincode": "05757079"   
         }
         
         print("Searching for students...")

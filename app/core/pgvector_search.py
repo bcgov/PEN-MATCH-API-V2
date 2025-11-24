@@ -149,15 +149,13 @@ if __name__ == "__main__":
         
         # Search query with actual data
         query = {
-                "pen": "",
                 "legalFirstName": "",
                 "legalLastName": "",
                 "legalMiddleNames": "",
                 "dob": "",
                 "sexCode": "",
                 "postalCode": "",
-                "mincode": "",
-                "localID": ""
+                "mincode": ""
         }
         
         print("Searching for students...")

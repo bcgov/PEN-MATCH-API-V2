@@ -101,17 +101,17 @@ class StudentEmbedding:
         """Convert student data to text for embedding"""
         parts = []
         
-        # Name format: {first} {middle} {last}
-        name_parts = []
+        # First name
         if student.get("legalFirstName") and student["legalFirstName"] != 'NULL':
-            name_parts.append(student["legalFirstName"])
-        if student.get("legalMiddleNames") and student["legalMiddleNames"] != 'NULL':
-            name_parts.append(student["legalMiddleNames"])
-        if student.get("legalLastName") and student["legalLastName"] != 'NULL':
-            name_parts.append(student["legalLastName"])
+            parts.append(f"First name: {student['legalFirstName']}.")
         
-        if name_parts:
-            parts.append(f"Name: {' '.join(name_parts)}.")
+        # Last name
+        if student.get("legalLastName") and student["legalLastName"] != 'NULL':
+            parts.append(f"Last name: {student['legalLastName']}.")
+        
+        # Middle name
+        if student.get("legalMiddleNames") and student["legalMiddleNames"] != 'NULL':
+            parts.append(f"Middle name: {student['legalMiddleNames']}.")
         
         # DOB format: Born on September twenty, nineteen ninety five
         if student.get("dob") and student["dob"] != 'NULL':

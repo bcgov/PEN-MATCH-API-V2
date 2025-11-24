@@ -24,36 +24,14 @@ class EmbeddingImportService:
         print("EmbeddingImportService initialized successfully")
     
     def _generate_embeddings_batch(self, students: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Generate embeddings for a batch of students with separate columns"""
+        """Generate embeddings for a batch of students"""
         results = []
         for student in students:
             try:
-                # Generate name-only embedding
                 embedding = self.student_embedding.generate_embedding(student)
-                
-                # Prepare separate columns
-                result = {
-                    'student_id': student['student_id'],
-                    'embedding': embedding,
-                    'dob': student.get('dob') if student.get('dob') != 'NULL' else None,
-                    'postal_code': student.get('postalCode') if student.get('postalCode') != 'NULL' else None,
-                    'mincode': student.get('mincode') if student.get('mincode') != 'NULL' else None,
-                    'sex_code': student.get('sexCode') if student.get('sexCode') != 'NULL' else None,
-                    'success': True
-                }
-                results.append(result)
-                
-            except Exception as e:
-                print(f"Error generating embedding for student {student.get('student_id')}: {e}")
-                results.append({
-                    'student_id': student['student_id'], 
-                    'embedding': None, 
-                    'dob': None,
-                    'postal_code': None, 
-                    'mincode': None,
-                    'sex_code': None,
-                    'success': False
-                })
+                results.append({'student_id': student['student_id'], 'embedding': embedding, 'success': True})
+            except Exception:
+                results.append({'student_id': student['student_id'], 'embedding': None, 'success': False})
         return results
     
     async def _process_students_parallel(self, students: List[Dict[str, Any]], executor: ThreadPoolExecutor) -> List[Dict[str, Any]]:
@@ -75,64 +53,14 @@ class EmbeddingImportService:
         
         return results
     
-    async def _batch_upsert_embeddings_with_columns(self, results: List[Dict[str, Any]]) -> int:
-        """Batch upsert embeddings with separate columns"""
-        if not results:
-            return 0
-        
-        successful_results = [r for r in results if r['success'] and r['embedding']]
-        if not successful_results:
-            return 0
-        
-        conn = await self.db.get_connection()
-        try:
-            # Prepare batch insert/update query with all 5 columns
-            query = """
-                INSERT INTO "api_pen_match_v2".student_embeddings 
-                (student_id, embedding, dob, postal_code, mincode, sex_code, status_code, create_user, update_user)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-                ON CONFLICT (student_id) DO UPDATE SET
-                embedding = EXCLUDED.embedding,
-                dob = EXCLUDED.dob,
-                postal_code = EXCLUDED.postal_code,
-                mincode = EXCLUDED.mincode,
-                sex_code = EXCLUDED.sex_code,
-                update_user = EXCLUDED.update_user, 
-                update_date = now()
-            """
-            
-            batch_data = []
-            for result in successful_results:
-                embedding_str = "[" + ",".join(str(x) for x in result['embedding']) + "]"
-                batch_data.append((
-                    result['student_id'],
-                    embedding_str,
-                    result['dob'],
-                    result['postal_code'], 
-                    result['mincode'],
-                    result['sex_code'],
-                    'A',  # status_code
-                    'system',  # create_user
-                    'system'   # update_user
-                ))
-            
-            await conn.executemany(query, batch_data)
-            return len(successful_results)
-            
-        except Exception as e:
-            print(f"Error in batch upsert: {e}")
-            return 0
-        finally:
-            await conn.close()
-    
     async def _process_single_batch(self, offset: int, batch_size: int, executor: ThreadPoolExecutor) -> int:
-        """Process single batch with 5-column storage"""
+        """Process single batch"""
         students = await self.db.fetch_students_batch(offset, batch_size)
         if not students:
             return 0
         
         results = await self._process_students_parallel(students, executor)
-        processed = await self._batch_upsert_embeddings_with_columns(results)
+        processed = await self.db.batch_upsert_embeddings(results)
         
         self.stats.total_processed += processed
         self.stats.total_failed += len(students) - processed
@@ -141,7 +69,7 @@ class EmbeddingImportService:
         return processed
     
     async def import_one_batch(self, offset=0, batch_size=100):
-        """Import single batch with 5-column storage"""
+        """Import single batch with legacy logging for backward compatibility"""
         print(f"Starting import for batch at offset {offset} with batch size {batch_size}")
         print("Connecting to PostgreSQL database...")
         
@@ -149,34 +77,24 @@ class EmbeddingImportService:
         try:
             print(f"Fetching students from database - Offset {offset}, Batch size {batch_size}")
             
+            # Use legacy method for single batch
             query = """
-                SELECT student_id, COALESCE(pen, 'NULL') as pen, 
-                       COALESCE(legal_first_name, 'NULL') as legal_first_name,
-                       COALESCE(legal_last_name, 'NULL') as legal_last_name, 
-                       COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
-                       COALESCE(dob::text, 'NULL') as dob, 
-                       COALESCE(sex_code, 'NULL') as sex_code,
-                       COALESCE(postal_code, 'NULL') as postal_code, 
-                       COALESCE(mincode, 'NULL') as mincode,
+                SELECT student_id, COALESCE(pen, 'NULL') as pen, COALESCE(legal_first_name, 'NULL') as legal_first_name,
+                       COALESCE(legal_last_name, 'NULL') as legal_last_name, COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
+                       COALESCE(dob::text, 'NULL') as dob, COALESCE(sex_code, 'NULL') as sex_code,
+                       COALESCE(postal_code, 'NULL') as postal_code, COALESCE(mincode, 'NULL') as mincode,
                        COALESCE(LPAD(local_id::text, 8, '0'), 'NULL') as local_id
-                FROM "api_pen_match_v2".student 
-                ORDER BY student_id ASC LIMIT $1 OFFSET $2
+                FROM "api_pen_match_v2".student ORDER BY student_id ASC LIMIT $1 OFFSET $2
             """
             rows = await conn.fetch(query, batch_size, offset)
             
             students = []
             for row in rows:
                 student = {
-                    "student_id": row["student_id"], 
-                    "pen": row["pen"], 
-                    "legalFirstName": row["legal_first_name"],
-                    "legalLastName": row["legal_last_name"], 
-                    "legalMiddleNames": row["legal_middle_names"],
-                    "dob": row["dob"], 
-                    "sexCode": row["sex_code"], 
-                    "postalCode": row["postal_code"],
-                    "mincode": row["mincode"], 
-                    "localID": row["local_id"]
+                    "student_id": row["student_id"], "pen": row["pen"], "legalFirstName": row["legal_first_name"],
+                    "legalLastName": row["legal_last_name"], "legalMiddleNames": row["legal_middle_names"],
+                    "dob": row["dob"], "sexCode": row["sex_code"], "postalCode": row["postal_code"],
+                    "mincode": row["mincode"], "localID": row["local_id"]
                 }
                 students.append(student)
                 print(f"Fetched student: {student['student_id']} - {student['pen']} - {student['legalFirstName']} {student['legalLastName']}")
@@ -195,45 +113,22 @@ class EmbeddingImportService:
                         continue
                         
                     print(f"Processing student {i}/{len(students)} - ID: {student_id}")
-                    
-                    # Generate name-only embedding
                     embedding = self.student_embedding.generate_embedding(student)
+                    
                     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-                    
-                    # Prepare separate column values
-                    dob_val = student.get('dob') if student.get('dob') != 'NULL' else None
-                    postal_code_val = student.get('postalCode') if student.get('postalCode') != 'NULL' else None
-                    mincode_val = student.get('mincode') if student.get('mincode') != 'NULL' else None
-                    sex_code_val = student.get('sexCode') if student.get('sexCode') != 'NULL' else None
-                    
-                    # Insert with all 5 columns: embedding + 4 separate fields
                     await conn.execute("""
-                        INSERT INTO "api_pen_match_v2".student_embeddings 
-                        (student_id, embedding, dob, postal_code, mincode, sex_code, status_code, create_user, update_user)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-                        ON CONFLICT (student_id) DO UPDATE SET
-                        embedding = EXCLUDED.embedding,
-                        dob = EXCLUDED.dob,
-                        postal_code = EXCLUDED.postal_code,
-                        mincode = EXCLUDED.mincode,
-                        sex_code = EXCLUDED.sex_code,
-                        update_user = EXCLUDED.update_user, 
-                        update_date = now()
-                    """, student_id, embedding_str, dob_val, postal_code_val, mincode_val, sex_code_val, 'A', 'system', 'system')
-                    
+                        INSERT INTO "api_pen_match_v2".student_embeddings (student_id, embedding, status_code, create_user, update_user)
+                        VALUES ($1, $2, $3, $4, $5) ON CONFLICT (student_id) DO UPDATE SET
+                        embedding = EXCLUDED.embedding, update_user = EXCLUDED.update_user, update_date = now()
+                    """, student_id, embedding_str, 'A', 'system', 'system')
                     processed += 1
-                    print(f"Successfully processed student {student_id} with 5 columns:")
-                    print(f"  - Name embedding: {len(embedding)} dimensions")
-                    print(f"  - DOB: {dob_val}")
-                    print(f"  - Postal Code: {postal_code_val}")
-                    print(f"  - Mincode: {mincode_val}")
-                    print(f"  - Sex Code: {sex_code_val}")
+                    print(f"Successfully processed student {student_id}")
                     
                 except Exception as e:
                     print(f"Error processing student {student.get('student_id', 'unknown')}: {e}")
                     continue
             
-            print(f"Batch import completed - {processed}/{len(students)} students processed with 5 columns")
+            print(f"Batch import completed - {processed}/{len(students)} students processed")
             return processed
             
         except Exception as e:
@@ -243,8 +138,8 @@ class EmbeddingImportService:
             await conn.close()
     
     async def import_all_students(self, batch_size=1000):
-        """Optimized import for all students with 5-column storage"""
-        print(f"Starting optimized import for all students with 5-column storage (batch_size: {batch_size})")
+        """Optimized import for all students"""
+        print(f"Starting optimized import for all students (batch_size: {batch_size})")
         
         self.stats.start_time = time.time()
         await self.db.create_pool()
@@ -252,12 +147,6 @@ class EmbeddingImportService:
         try:
             total_count = await self.db.get_total_student_count()
             print(f"Total records: {total_count:,}")
-            print("Importing 5 columns:")
-            print("  1. Name Embedding (First + Last + Middle names)")
-            print("  2. DOB")
-            print("  3. Postal Code")
-            print("  4. Mincode")
-            print("  5. Sex Code")
             
             with ThreadPoolExecutor(max_workers=self.thread_pool_size) as executor:
                 semaphore = asyncio.Semaphore(self.max_concurrent_batches)
@@ -287,24 +176,23 @@ class EmbeddingImportService:
                               f"({self.stats.total_processed:,} records, {rate:.1f} batches/sec)")
             
             elapsed = time.time() - self.stats.start_time
-            print(f"5-Column import completed:")
-            print(f"  - Processed: {self.stats.total_processed:,} students")
-            print(f"  - Failed: {self.stats.total_failed:,} students")
-            print(f"  - Time: {elapsed:.1f}s ({self.stats.total_processed/elapsed:.0f} records/sec)")
-            print(f"  - Columns stored: Name Embedding + DOB + Postal Code + Mincode + Sex Code")
+            print(f"Completed: {self.stats.total_processed:,} processed, {self.stats.total_failed:,} failed "
+                  f"in {elapsed:.1f}s ({self.stats.total_processed/elapsed:.0f} records/sec)")
             
             return self.stats.total_processed
             
         except Exception as e:
-            print(f"5-column import failed: {e}")
+            print(f"Import failed: {e}")
             raise
         finally:
             await self.db.close()
 
     async def import_all_records_by_names(self, target_names: List[tuple]) -> int:
-        """Import all student records that match specified name pairs with 5-column storage"""
-        print(f"Starting 5-column import for all records matching {len(target_names)} name pairs")
+        """Import all student records that match the specified (first_name, last_name) pairs"""
+        print(f"Starting import for all records matching {len(target_names)} name pairs")
+        print("This could be hundreds of records for each name...")
         
+        # Convert names to lowercase for case-insensitive matching
         target_names_lower = [(first.lower(), last.lower()) for first, last in target_names]
         
         conn = await self.db.get_connection()
@@ -315,6 +203,7 @@ class EmbeddingImportService:
             for i, (first_name, last_name) in enumerate(target_names, 1):
                 print(f"\nProcessing name pair {i}/{len(target_names)}: {first_name} {last_name}")
                 
+                # Find all students with this name (case-insensitive)
                 query = """
                     SELECT student_id, COALESCE(pen, 'NULL') as pen, 
                            COALESCE(legal_first_name, 'NULL') as legal_first_name,
@@ -335,6 +224,7 @@ class EmbeddingImportService:
                 print(f"Found {len(rows)} records for {first_name} {last_name}")
                 
                 if not rows:
+                    print(f"No records found for {first_name} {last_name}")
                     continue
                 
                 processed_for_name = 0
@@ -356,7 +246,7 @@ class EmbeddingImportService:
                             skipped_for_name += 1
                             continue
                         
-                        # Create student object
+                        # Create student object for embedding generation
                         student = {
                             "student_id": student_id,
                             "pen": row["pen"],
@@ -370,26 +260,20 @@ class EmbeddingImportService:
                             "localID": row["local_id"]
                         }
                         
-                        # Generate name-only embedding
+                        # Generate embedding
                         embedding = self.student_embedding.generate_embedding(student)
                         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                         
-                        # Prepare separate column values
-                        dob_val = student.get('dob') if student.get('dob') != 'NULL' else None
-                        postal_code_val = student.get('postalCode') if student.get('postalCode') != 'NULL' else None
-                        mincode_val = student.get('mincode') if student.get('mincode') != 'NULL' else None
-                        sex_code_val = student.get('sexCode') if student.get('sexCode') != 'NULL' else None
-                        
-                        # Insert with all 5 columns
+                        # Insert new embedding (only if doesn't exist)
                         await conn.execute("""
                             INSERT INTO "api_pen_match_v2".student_embeddings 
-                            (student_id, embedding, dob, postal_code, mincode, sex_code, status_code, create_user, update_user)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            (student_id, embedding, status_code, create_user, update_user)
+                            VALUES ($1, $2, $3, $4, $5)
                             ON CONFLICT (student_id) DO NOTHING
-                        """, student_id, embedding_str, dob_val, postal_code_val, mincode_val, sex_code_val, 'A', 'system', 'system')
+                        """, student_id, embedding_str, 'A', 'system', 'system')
                         
                         processed_for_name += 1
-                        print(f"    Successfully processed student {student_id} with 5 columns")
+                        print(f"    Successfully processed student {student_id}")
                         
                     except Exception as e:
                         print(f"    Error processing student {row.get('student_id', 'unknown')}: {e}")
@@ -399,15 +283,15 @@ class EmbeddingImportService:
                 total_skipped += skipped_for_name
                 print(f"Completed {first_name} {last_name}: {processed_for_name} processed, {skipped_for_name} skipped")
             
-            print(f"\n5-Column name-based import completed:")
+            print(f"\nName-based import completed:")
             print(f"  Total processed: {total_processed}")
-            print(f"  Total skipped: {total_skipped}")
-            print(f"  Columns: Name Embedding + DOB + Postal Code + Mincode + Sex Code")
+            print(f"  Total skipped (already existed): {total_skipped}")
+            print(f"  Grand total records found: {total_processed + total_skipped}")
             
             return total_processed
             
         except Exception as e:
-            print(f"5-column name-based import failed: {e}")
+            print(f"Name-based import failed: {e}")
             raise
         finally:
             await conn.close()
@@ -417,39 +301,39 @@ if __name__ == "__main__":
     import sys
     
     async def main():
-        print("Starting Embedding Import Service (5-Column Storage)")
-        print("Columns: Name Embedding + DOB + Postal Code + Mincode + Sex Code")
+        print("Starting Embedding Import Service")
         service = EmbeddingImportService()
         
         try:
             if len(sys.argv) > 1:
                 if sys.argv[1] == "all":
                     batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
-                    print(f"Mode: Import all students with 5-column storage (batch size {batch_size})")
+                    print(f"Mode: Import all students with batch size {batch_size}")
                     result = await service.import_all_students(batch_size)
-                    print(f"Final result: {result} total students processed with 5 columns")
+                    print(f"Final result: {result} total students processed")
                 elif sys.argv[1] == "names":
+                    # Target name pairs - could be hundreds of records for each
                     target_names = [
                         ("MICHAEL", "LEE")
                     ]
-                    print(f"Mode: Import all records matching {len(target_names)} name pairs with 5-column storage")
+                    print(f"Mode: Import all student records matching {len(target_names)} name pairs")
                     result = await service.import_all_records_by_names(target_names)
-                    print(f"Final result: {result} student records processed with 5 columns")
+                    print(f"Final result: {result} student records processed")
                 else:
                     offset = int(sys.argv[1])
                     batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
-                    print(f"Mode: Import single batch with 5-column storage (offset {offset}, batch size {batch_size})")
+                    print(f"Mode: Import single batch at offset {offset} with batch size {batch_size}")
                     result = await service.import_one_batch(offset, batch_size)
-                    print(f"Final result: {result} students processed with 5 columns")
+                    print(f"Final result: {result} students processed from offset {offset}")
             else:
-                print("Mode: Default import with 5-column storage (offset 0, size 100)")
+                print("Mode: Default import (offset 0, size 100)")
                 result = await service.import_one_batch()
-                print(f"Final result: {result} students processed with 5 columns")
+                print(f"Final result: {result} students processed from offset 0")
                 
-            print("5-Column Embedding Import Service completed successfully")
+            print("Embedding Import Service completed successfully")
             
         except Exception as e:
-            print(f"5-Column Embedding Import Service failed: {e}")
+            print(f"Embedding Import Service failed: {e}")
             return 1
         
         return 0

@@ -20,7 +20,6 @@ class PGVectorSearchService:
             # Parse YYYY-MM-DD format
             return datetime.strptime(date_str, '%Y-%m-%d').date()
         except ValueError:
-            print(f"Invalid date format: {date_str}")
             return None
     
     async def create_hnsw_index_if_not_exists(self):
@@ -39,9 +38,6 @@ class PGVectorSearchService:
                 existing_index = await conn.fetchval(check_index_query)
                 
                 if not existing_index:
-                    print("Creating HNSW index for improved search performance...")
-                    create_index_start = time.time()
-                    
                     create_index_query = """
                         CREATE INDEX CONCURRENTLY student_embeddings_hnsw_idx 
                         ON "api_pen_match_v2".student_embeddings 
@@ -50,29 +46,21 @@ class PGVectorSearchService:
                     """
                     
                     await conn.execute(create_index_query)
-                    create_index_time = time.time() - create_index_start
-                    
-                    print(f"HNSW index created successfully in {create_index_time:.2f} seconds")
-                else:
-                    print("HNSW index already exists")
                     
         except Exception as e:
             print(f"Error managing HNSW index: {e}")
-        # Don't close the pool here - keep it open for search
     
     def _calculate_postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
         """Calculate postal code similarity (unreliable, small weight)"""
         if not query_postal or not candidate_postal:
             return 0.0
         
-        # Remove spaces and convert to uppercase
         query_clean = query_postal.replace(" ", "").upper()
         candidate_clean = candidate_postal.replace(" ", "").upper()
         
         if query_clean == candidate_clean:
             return 1.0
         
-        # Use sequence matcher for fuzzy matching
         similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
         return similarity
     
@@ -87,7 +75,6 @@ class PGVectorSearchService:
         if query_clean == candidate_clean:
             return 1.0
         
-        # Partial matching for mincode
         similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
         return similarity if similarity > 0.7 else 0.0
     
@@ -128,25 +115,12 @@ class PGVectorSearchService:
     async def search_students(self, query: Dict[str, Any]) -> Dict[str, Any]:
         """
         Hybrid search: Name embedding + soft scoring for other fields
-        
-        Args:
-            query: Student search fields
-        
-        Returns:
-            Dictionary with ranked results
         """
-        
-        print(f"=== HYBRID SEARCH STARTING ===")
-        print(f"Query: {query}")
         
         # Step 1: Generate name embedding
         embedding_start_time = time.time()
         query_embedding = self.student_embedding.generate_embedding(query)
         embedding_time = time.time() - embedding_start_time
-        
-        query_text = self.student_embedding.student_to_text(query)
-        print(f"Name text for embedding: '{query_text}'")
-        print(f"Generated embedding with {len(query_embedding)} dimensions")
         
         # Ensure database connection pool is available
         if not self.db.connection_pool:
@@ -188,12 +162,9 @@ class PGVectorSearchService:
                 if query.get("dob") and query["dob"] != 'NULL':
                     dob_date = self._parse_date(query["dob"])
                     if dob_date:
-                        print(f"Applying DOB hard filter: {dob_date}")
                         base_query += " AND se.dob = $2"
                         query_params.append(dob_date)
                         dob_filter_applied = True
-                    else:
-                        print(f"Invalid DOB format: {query['dob']}, skipping DOB filter")
                 
                 # Order by embedding similarity and limit to top 200
                 base_query += """
@@ -201,11 +172,8 @@ class PGVectorSearchService:
                     LIMIT 200
                 """
                 
-                print(f"Executing vector search with {'DOB filter' if dob_filter_applied else 'no filters'}...")
                 candidates_rows = await conn.fetch(base_query, *query_params)
                 vector_search_time = time.time() - vector_search_start_time
-                
-                print(f"Vector search returned {len(candidates_rows)} candidates in {vector_search_time:.4f}s")
                 
                 # Step 3: Python soft scoring
                 scoring_start_time = time.time()
@@ -245,15 +213,8 @@ class PGVectorSearchService:
                 # Calculate total processing time
                 total_time = embedding_time + vector_search_time + scoring_time
                 
-                print(f"=== HYBRID SEARCH COMPLETED ===")
-                print(f"Embedding time: {embedding_time:.4f}s")
-                print(f"Vector search time: {vector_search_time:.4f}s")
-                print(f"Soft scoring time: {scoring_time:.4f}s")
-                print(f"Total time: {total_time:.4f}s")
-                
                 return {
                     "query": query,
-                    "query_text_for_embedding": query_text,
                     "methodology": {
                         "step1": "Name embedding generation",
                         "step2": "SQL hard filter (DOB if provided) + vector search (top 200)",
@@ -273,7 +234,6 @@ class PGVectorSearchService:
         except Exception as e:
             print(f"Error during search: {e}")
             raise
-        # Don't close the pool here - keep it open for future searches
 
 # Test example
 if __name__ == "__main__":
@@ -283,52 +243,47 @@ if __name__ == "__main__":
         # Create HNSW index if needed
         await service.create_hnsw_index_if_not_exists()
         
-        # Test with sample query - using actual data
+        # Test with sample query - filled with actual data
         query = {
+            "legalFirstName": "MICHAEL", 
+            "legalLastName": "LEE", 
+            "legalMiddleNames": "RICHARD",
+            # Remove DOB filter for testing - may not exist in database
+            # "dob": "2001-02-10",  
+            "sexCode": "M",       
+            "postalCode": "V3N1H4",
+            "mincode": "05757079"   
         }
         
-        print("=== TESTING HYBRID SEARCH ===")
+        print("Searching for students...")
         results = await service.search_students(query)
 
         # Performance metrics
         perf = results['performance']
         print(f"\n=== PERFORMANCE METRICS ===")
-        print(f"Query text: '{results['query_text_for_embedding']}'")
         print(f"Embedding Generation: {perf['embedding_time_seconds']} seconds")
         print(f"Vector Search: {perf['vector_search_time_seconds']} seconds")
         print(f"Soft Scoring: {perf['soft_scoring_time_seconds']} seconds")
         print(f"Total Processing: {perf['total_processing_time_seconds']} seconds")
 
-        # Methodology
-        print(f"\n=== METHODOLOGY ===")
-        for step, desc in results['methodology'].items():
-            print(f"{step}: {desc}")
-
         # Results summary
         print(f"\n=== RESULTS SUMMARY ===")
         print(f"Total Candidates: {results['total_candidates']}")
-        print(f"Returning top 10 ranked by: embedding similarity + soft score bonus")
 
-        # Top 10 results
-        top_10 = results['candidates'][:10]
-        if top_10:
+        # Top 10 results with all fields like pgvector_search_v1.py
+        candidates = results['candidates'][:10]
+        if candidates:
             print(f"\n=== TOP 10 RANKED RESULTS ===")
-            for i, candidate in enumerate(top_10, 1):
+            for i, candidate in enumerate(candidates, 1):
                 print(f"{i}. {candidate['legalFirstName']} {candidate['legalLastName']} {candidate['legalMiddleNames'] or ''}")
-                print(f"   PEN: {candidate['pen']}")
-                print(f"   DOB: {candidate['dob']}, Sex: {candidate['sexCode']}")
-                print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}")
+                print(f"   PEN: {candidate['pen']}, DOB: {candidate['dob']}, Sex: {candidate['sexCode']}")
+                print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}, LocalID: {candidate['localID']}")
                 print(f"   Embedding Similarity: {candidate['embedding_similarity']:.4f}")
                 print(f"   Soft Score Bonus: {candidate['soft_score']:.4f}")
                 print(f"   Final Score: {candidate['final_score']:.4f}")
                 print()
         else:
             print("No candidates found")
-
-        # Output PENs for top 10
-        top_10_pens = [candidate['pen'] for candidate in top_10]
-        print(f"=== TOP 10 PENS ===")
-        print(f"PENs: {top_10_pens}")
 
         # Close connection pool at the end
         await service.db.close()

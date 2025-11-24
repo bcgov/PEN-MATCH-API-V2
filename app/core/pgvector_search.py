@@ -45,8 +45,7 @@ class PGVectorSearchService:
                     
         except Exception as e:
             print(f"Error managing HNSW index: {e}")
-        finally:
-            await self.db.close()
+        # Don't close the pool here - keep it open for search
     
     def _calculate_postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
         """Calculate postal code similarity (unreliable, small weight)"""
@@ -136,7 +135,9 @@ class PGVectorSearchService:
         print(f"Name text for embedding: '{query_text}'")
         print(f"Generated embedding with {len(query_embedding)} dimensions")
         
-        await self.db.create_pool()
+        # Ensure database connection pool is available
+        if not self.db.connection_pool:
+            await self.db.create_pool()
         
         try:
             async with self.db.connection_pool.acquire() as conn:
@@ -248,9 +249,11 @@ class PGVectorSearchService:
                         "total_processing_time_seconds": round(total_time, 4)
                     }
                 }
-                
-        finally:
-            await self.db.close()
+        
+        except Exception as e:
+            print(f"Error during search: {e}")
+            raise
+        # Don't close the pool here - keep it open for future searches
 
 # Test example
 if __name__ == "__main__":
@@ -262,7 +265,13 @@ if __name__ == "__main__":
         
         # Test with sample query
         query = {
-            
+            "legalFirstName": "MICHAEL", 
+            "legalLastName": "LEE", 
+            "legalMiddleNames": "RICHARD",
+            "dob": "2001-02-10",  # Optional DOB hard filter
+            "sexCode": "M",       # Soft scoring
+            "postalCode": "V3N1H4", # Soft scoring  
+            "mincode": "05757079"   # Soft scoring
         }
         
         print("=== TESTING HYBRID SEARCH ===")
@@ -307,5 +316,8 @@ if __name__ == "__main__":
         top_10_pens = [candidate['pen'] for candidate in top_10]
         print(f"=== TOP 10 PENS ===")
         print(f"PENs: {top_10_pens}")
+
+        # Close connection pool at the end
+        await service.db.close()
 
     asyncio.run(test())

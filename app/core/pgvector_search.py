@@ -4,11 +4,24 @@ from typing import List, Dict, Any, Optional
 from core.student_embedding import StudentEmbedding
 from database.postgresql import PostgreSQLManager
 import difflib
+from datetime import datetime, date
 
 class PGVectorSearchService:
     def __init__(self):
         self.student_embedding = StudentEmbedding()
         self.db = PostgreSQLManager()
+    
+    def _parse_date(self, date_str: str) -> Optional[date]:
+        """Convert date string to Python date object"""
+        if not date_str or date_str == 'NULL':
+            return None
+        
+        try:
+            # Parse YYYY-MM-DD format
+            return datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            print(f"Invalid date format: {date_str}")
+            return None
     
     async def create_hnsw_index_if_not_exists(self):
         """Create HNSW index on embeddings if it doesn't exist"""
@@ -170,10 +183,17 @@ class PGVectorSearchService:
                 
                 # Apply DOB hard filter if provided
                 query_params = [embedding_str]
+                dob_filter_applied = False
+                
                 if query.get("dob") and query["dob"] != 'NULL':
-                    print(f"Applying DOB hard filter: {query['dob']}")
-                    base_query += " AND se.dob = $2"
-                    query_params.append(query["dob"])
+                    dob_date = self._parse_date(query["dob"])
+                    if dob_date:
+                        print(f"Applying DOB hard filter: {dob_date}")
+                        base_query += " AND se.dob = $2"
+                        query_params.append(dob_date)
+                        dob_filter_applied = True
+                    else:
+                        print(f"Invalid DOB format: {query['dob']}, skipping DOB filter")
                 
                 # Order by embedding similarity and limit to top 200
                 base_query += """
@@ -181,7 +201,7 @@ class PGVectorSearchService:
                     LIMIT 200
                 """
                 
-                print(f"Executing vector search with {'DOB filter' if len(query_params) > 1 else 'no filters'}...")
+                print(f"Executing vector search with {'DOB filter' if dob_filter_applied else 'no filters'}...")
                 candidates_rows = await conn.fetch(base_query, *query_params)
                 vector_search_time = time.time() - vector_search_start_time
                 
@@ -263,8 +283,15 @@ if __name__ == "__main__":
         # Create HNSW index if needed
         await service.create_hnsw_index_if_not_exists()
         
-        # Test with sample query
+        # Test with sample query - using actual data
         query = {
+            "legalFirstName": "MICHAEL", 
+            "legalLastName": "LEE", 
+            "legalMiddleNames": "RICHARD",
+            "dob": "2001-02-10",  # Optional DOB hard filter
+            "sexCode": "M",       # Soft scoring
+            "postalCode": "V3N1H4", # Soft scoring  
+            "mincode": "05757079"   # Soft scoring
         }
         
         print("=== TESTING HYBRID SEARCH ===")

@@ -262,13 +262,7 @@ if __name__ == "__main__":
         
         # Test with sample query
         query = {
-            "legalFirstName": "Michael",
-            "legalLastName": "Lee",
-            "legalMiddleNames": "James",
-            "dob": "1995-08-15",  # Optional DOB hard filter
-            "sexCode": "M",
-            "postalCode": "V5K2A1",
-            "mincode": "12345678"
+            
         }
         
         print("=== TESTING HYBRID SEARCH ===")

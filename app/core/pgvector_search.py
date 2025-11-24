@@ -285,13 +285,6 @@ if __name__ == "__main__":
         
         # Test with sample query - using actual data
         query = {
-            "legalFirstName": "MICHAEL", 
-            "legalLastName": "LEE", 
-            "legalMiddleNames": "RICHARD",
-            "dob": "2001-02-10",  # Optional DOB hard filter
-            "sexCode": "M",       # Soft scoring
-            "postalCode": "V3N1H4", # Soft scoring  
-            "mincode": "05757079"   # Soft scoring
         }
         
         print("=== TESTING HYBRID SEARCH ===")

@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 from dataclasses import dataclass
+from datetime import datetime, date
 from core.student_embedding import StudentEmbedding
 from database.postgresql import PostgreSQLManager
 
@@ -23,6 +24,18 @@ class EmbeddingImportService:
         print("Initializing EmbeddingImportService...")
         print("EmbeddingImportService initialized successfully")
     
+    def _parse_date(self, date_str: str) -> date:
+        """Convert date string to Python date object"""
+        if not date_str or date_str == 'NULL':
+            return None
+        
+        try:
+            # Parse YYYY-MM-DD format
+            return datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            print(f"Invalid date format: {date_str}")
+            return None
+    
     def _generate_embeddings_batch(self, students: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Generate embeddings for a batch of students with separate columns"""
         results = []
@@ -31,11 +44,16 @@ class EmbeddingImportService:
                 # Generate name-only embedding
                 embedding = self.student_embedding.generate_embedding(student)
                 
+                # Parse date properly
+                dob_date = None
+                if student.get('dob') and student.get('dob') != 'NULL':
+                    dob_date = self._parse_date(student.get('dob'))
+                
                 # Prepare separate columns
                 result = {
                     'student_id': student['student_id'],
                     'embedding': embedding,
-                    'dob': student.get('dob') if student.get('dob') != 'NULL' else None,
+                    'dob': dob_date,
                     'postal_code': student.get('postalCode') if student.get('postalCode') != 'NULL' else None,
                     'mincode': student.get('mincode') if student.get('mincode') != 'NULL' else None,
                     'sex_code': student.get('sexCode') if student.get('sexCode') != 'NULL' else None,
@@ -107,7 +125,7 @@ class EmbeddingImportService:
                 batch_data.append((
                     result['student_id'],
                     embedding_str,
-                    result['dob'],
+                    result['dob'],  # Already converted to date object
                     result['postal_code'], 
                     result['mincode'],
                     result['sex_code'],
@@ -200,8 +218,8 @@ class EmbeddingImportService:
                     embedding = self.student_embedding.generate_embedding(student)
                     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                     
-                    # Prepare separate column values
-                    dob_val = student.get('dob') if student.get('dob') != 'NULL' else None
+                    # Prepare separate column values with proper date conversion
+                    dob_val = self._parse_date(student.get('dob')) if student.get('dob') != 'NULL' else None
                     postal_code_val = student.get('postalCode') if student.get('postalCode') != 'NULL' else None
                     mincode_val = student.get('mincode') if student.get('mincode') != 'NULL' else None
                     sex_code_val = student.get('sexCode') if student.get('sexCode') != 'NULL' else None
@@ -374,8 +392,8 @@ class EmbeddingImportService:
                         embedding = self.student_embedding.generate_embedding(student)
                         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
                         
-                        # Prepare separate column values
-                        dob_val = student.get('dob') if student.get('dob') != 'NULL' else None
+                        # Prepare separate column values with proper date conversion
+                        dob_val = self._parse_date(student.get('dob')) if student.get('dob') != 'NULL' else None
                         postal_code_val = student.get('postalCode') if student.get('postalCode') != 'NULL' else None
                         mincode_val = student.get('mincode') if student.get('mincode') != 'NULL' else None
                         sex_code_val = student.get('sexCode') if student.get('sexCode') != 'NULL' else None

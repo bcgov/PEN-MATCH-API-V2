@@ -97,6 +97,21 @@ class PGVectorSearchService:
         middle = query.get("legalMiddleNames", "")
         return middle and middle.strip() and middle != 'NULL'
     
+    def _is_reasonable_candidate(self, query: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+        """Filter for reasonable candidates based on basic criteria"""
+        
+        # Sex filter - if query has sex, candidate must match
+        query_sex = query.get("sexCode", "").upper()
+        candidate_sex = candidate.get("sexCode", "").upper()
+        if query_sex and candidate_sex and query_sex != candidate_sex:
+            return False
+        
+        # Name similarity threshold - embedding similarity must be reasonable
+        if candidate.get("embedding_similarity", 0) < 0.6:  # 60% similarity threshold
+            return False
+        
+        return True
+    
     def _calculate_soft_score(self, query: Dict[str, Any], candidate: Dict[str, Any]) -> float:
         """Calculate soft scoring for postal, mincode, sex with increased weights"""
         soft_score = 0.0
@@ -159,7 +174,7 @@ class PGVectorSearchService:
                 
                 embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
                 
-                # Step 2: Build SQL query with DOB hard filter (if provided)
+                # Step 2: Build SQL query with reasonable filters
                 vector_search_start_time = time.time()
                 
                 base_query = """
@@ -181,16 +196,26 @@ class PGVectorSearchService:
                     WHERE se.status_code = 'A'
                 """
                 
-                # Apply DOB hard filter if provided
+                # Apply filters
                 query_params = [embedding_str]
-                dob_filter_applied = False
+                param_counter = 2
                 
+                # DOB hard filter if provided
                 if query.get("dob") and query["dob"] != 'NULL':
                     dob_date = self._parse_date(query["dob"])
                     if dob_date:
-                        base_query += " AND se.dob = $2"
+                        base_query += f" AND se.dob = ${param_counter}"
                         query_params.append(dob_date)
-                        dob_filter_applied = True
+                        param_counter += 1
+                
+                # Sex hard filter if provided - get only same sex candidates
+                if query.get("sexCode") and query["sexCode"] != 'NULL':
+                    base_query += f" AND se.sex_code = ${param_counter}"
+                    query_params.append(query["sexCode"].upper())
+                    param_counter += 1
+                
+                # Name similarity filter - only get reasonably similar names
+                base_query += " AND (1 - (se.embedding <=> $1::vector)) >= 0.6"  # 60% name similarity minimum
                 
                 # Increase limit to get more candidates when middle name is missing
                 has_middle_name = self._has_middle_name_query(query)
@@ -205,7 +230,10 @@ class PGVectorSearchService:
                 candidates_rows = await conn.fetch(base_query, *query_params)
                 vector_search_time = time.time() - vector_search_start_time
                 
-                # Step 3: Python soft scoring
+                # Debug: Print candidate count
+                print(f"{len(candidates_rows)} candidates found")
+                
+                # Step 3: Python soft scoring and reasonable filtering
                 scoring_start_time = time.time()
                 scored_candidates = []
                 
@@ -224,6 +252,10 @@ class PGVectorSearchService:
                         "cosine_distance": float(row["cosine_distance"])
                     }
                     
+                    # Apply reasonable candidate filter
+                    if not self._is_reasonable_candidate(query, candidate):
+                        continue
+                    
                     # Calculate soft score for postal, mincode, sex
                     soft_score = self._calculate_soft_score(query, candidate)
                     
@@ -241,6 +273,12 @@ class PGVectorSearchService:
                 # Step 4: Final ranking by combined score
                 scored_candidates.sort(key=lambda x: x["final_score"], reverse=True)
                 
+                # Debug: Print top 10 candidates for text debug
+                print(f"\n=== DEBUG: TOP 10 CANDIDATES ===")
+                for i, candidate in enumerate(scored_candidates[:10], 1):
+                    print(f"{i}. {candidate['legalFirstName']} {candidate['legalLastName']} {candidate['legalMiddleNames'] or ''}")
+                    print(f"   Sex: {candidate['sexCode']}, Postal: {candidate['postalCode']}, Final Score: {candidate['final_score']:.4f}")
+                
                 # Calculate total processing time
                 total_time = embedding_time + vector_search_time + scoring_time
                 
@@ -249,8 +287,8 @@ class PGVectorSearchService:
                     "has_middle_name_in_query": has_middle_name,
                     "methodology": {
                         "step1": "Name embedding generation",
-                        "step2": f"SQL hard filter (DOB if provided) + vector search (top {limit})",
-                        "step3": "Python soft scoring (postal, mincode, sex) - higher weights when no middle name",
+                        "step2": f"SQL hard filter (DOB/Sex if provided) + vector search (top {limit}) + 60% name similarity",
+                        "step3": "Python reasonable filtering + soft scoring (postal, mincode, sex)",
                         "step4": "Final ranking (embedding + soft score)"
                     },
                     "candidates": scored_candidates,
@@ -275,9 +313,8 @@ if __name__ == "__main__":
         # Create HNSW index if needed
         await service.create_hnsw_index_if_not_exists()
         
-        # Test with sample query - NO MIDDLE NAME to test the problem
+        # Test with sample query - Name and Sex filtering
         query = {
-
         }
         
         print("Searching for students...")
@@ -294,22 +331,22 @@ if __name__ == "__main__":
 
         # Results summary
         print(f"\n=== RESULTS SUMMARY ===")
-        print(f"Total Candidates: {results['total_candidates']}")
+        print(f"Total Reasonable Candidates: {results['total_candidates']}")
 
-        # Top 10 results with all fields like pgvector_search_v1.py
+        # Top 10 results
         candidates = results['candidates'][:10]
         if candidates:
             print(f"\n=== TOP 10 RANKED RESULTS ===")
             for i, candidate in enumerate(candidates, 1):
                 print(f"{i}. {candidate['legalFirstName']} {candidate['legalLastName']} {candidate['legalMiddleNames'] or ''}")
                 print(f"   PEN: {candidate['pen']}, DOB: {candidate['dob']}, Sex: {candidate['sexCode']}")
-                print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}, LocalID: {candidate['localID']}")
+                print(f"   Postal: {candidate['postalCode']}, Mincode: {candidate['mincode']}")
                 print(f"   Embedding Similarity: {candidate['embedding_similarity']:.4f}")
                 print(f"   Soft Score Bonus: {candidate['soft_score']:.4f}")
                 print(f"   Final Score: {candidate['final_score']:.4f}")
                 print()
         else:
-            print("No candidates found")
+            print("No reasonable candidates found")
 
         # Close connection pool at the end
         await service.db.close()

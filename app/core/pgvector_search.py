@@ -277,12 +277,7 @@ if __name__ == "__main__":
         
         # Test with sample query - NO MIDDLE NAME to test the problem
         query = {
-            "legalFirstName": "MICHAEL", 
-            "legalLastName": "LEE", 
-            # "legalMiddleNames": "",  # No middle name provided
-            "sexCode": "M",       
-            "postalCode": "V3N1H4",
-            "mincode": "05757079"   
+
         }
         
         print("Searching for students...")

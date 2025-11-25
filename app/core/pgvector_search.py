@@ -51,7 +51,7 @@ class PGVectorSearchService:
             print(f"Error managing HNSW index: {e}")
     
     def _calculate_postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
-        """Calculate postal code similarity (unreliable, small weight)"""
+        """Calculate postal code similarity with improved matching"""
         if not query_postal or not candidate_postal:
             return 0.0
         
@@ -61,8 +61,14 @@ class PGVectorSearchService:
         if query_clean == candidate_clean:
             return 1.0
         
+        # Check if first 3 characters match (same area)
+        if len(query_clean) >= 3 and len(candidate_clean) >= 3:
+            if query_clean[:3] == candidate_clean[:3]:
+                return 0.7  # Partial match for same area
+        
+        # Fuzzy matching for close postal codes
         similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
-        return similarity
+        return similarity if similarity > 0.5 else 0.0
     
     def _calculate_mincode_similarity(self, query_mincode: str, candidate_mincode: str) -> float:
         """Calculate mincode similarity (exact match preferred)"""
@@ -75,8 +81,9 @@ class PGVectorSearchService:
         if query_clean == candidate_clean:
             return 1.0
         
+        # Partial matching for mincode
         similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
-        return similarity if similarity > 0.7 else 0.0
+        return similarity if similarity > 0.8 else 0.0
     
     def _calculate_sex_similarity(self, query_sex: str, candidate_sex: str) -> float:
         """Calculate sex similarity (exact match only)"""
@@ -85,30 +92,49 @@ class PGVectorSearchService:
         
         return 1.0 if query_sex.upper() == candidate_sex.upper() else 0.0
     
+    def _has_middle_name_query(self, query: Dict[str, Any]) -> bool:
+        """Check if query has middle name"""
+        middle = query.get("legalMiddleNames", "")
+        return middle and middle.strip() and middle != 'NULL'
+    
     def _calculate_soft_score(self, query: Dict[str, Any], candidate: Dict[str, Any]) -> float:
-        """Calculate soft scoring for postal, mincode, sex"""
+        """Calculate soft scoring for postal, mincode, sex with increased weights"""
         soft_score = 0.0
         
-        # Postal code similarity (weight: 0.1 - unreliable)
+        # Check if query has middle name - if not, increase weights for other fields
+        has_middle_name = self._has_middle_name_query(query)
+        
+        if has_middle_name:
+            # Normal weights when middle name is provided
+            postal_weight = 0.15    # Increased from 0.1
+            mincode_weight = 0.20   # Increased from 0.15  
+            sex_weight = 0.10       # Increased from 0.05
+        else:
+            # Higher weights when middle name is missing - compensate for embedding difference
+            postal_weight = 0.25    # Much higher weight
+            mincode_weight = 0.30   # Much higher weight
+            sex_weight = 0.15       # Much higher weight
+        
+        # Postal code similarity
         postal_sim = self._calculate_postal_similarity(
             query.get("postalCode", ""),
             candidate.get("postalCode", "")
         )
-        soft_score += postal_sim * 0.1
+        soft_score += postal_sim * postal_weight
         
-        # Mincode similarity (weight: 0.15)
+        # Mincode similarity  
         mincode_sim = self._calculate_mincode_similarity(
             query.get("mincode", ""),
             candidate.get("mincode", "")
         )
-        soft_score += mincode_sim * 0.15
+        soft_score += mincode_sim * mincode_weight
         
-        # Sex similarity (weight: 0.05)
+        # Sex similarity
         sex_sim = self._calculate_sex_similarity(
             query.get("sexCode", ""),
             candidate.get("sexCode", "")
         )
-        soft_score += sex_sim * 0.05
+        soft_score += sex_sim * sex_weight
         
         return soft_score
     
@@ -128,8 +154,8 @@ class PGVectorSearchService:
         
         try:
             async with self.db.connection_pool.acquire() as conn:
-                # Set HNSW search parameters
-                await conn.execute("SET hnsw.ef_search = 200")
+                # Set HNSW search parameters - increase for better recall when middle names missing
+                await conn.execute("SET hnsw.ef_search = 400")  # Increased from 200
                 
                 embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
                 
@@ -166,10 +192,14 @@ class PGVectorSearchService:
                         query_params.append(dob_date)
                         dob_filter_applied = True
                 
-                # Order by embedding similarity and limit to top 200
-                base_query += """
+                # Increase limit to get more candidates when middle name is missing
+                has_middle_name = self._has_middle_name_query(query)
+                limit = 300 if not has_middle_name else 200  # More candidates when middle name missing
+                
+                # Order by embedding similarity and limit
+                base_query += f"""
                     ORDER BY se.embedding <=> $1::vector ASC
-                    LIMIT 200
+                    LIMIT {limit}
                 """
                 
                 candidates_rows = await conn.fetch(base_query, *query_params)
@@ -202,6 +232,7 @@ class PGVectorSearchService:
                     
                     candidate["soft_score"] = soft_score
                     candidate["final_score"] = final_score
+                    candidate["has_middle_name_query"] = has_middle_name
                     
                     scored_candidates.append(candidate)
                 
@@ -215,10 +246,11 @@ class PGVectorSearchService:
                 
                 return {
                     "query": query,
+                    "has_middle_name_in_query": has_middle_name,
                     "methodology": {
                         "step1": "Name embedding generation",
-                        "step2": "SQL hard filter (DOB if provided) + vector search (top 200)",
-                        "step3": "Python soft scoring (postal, mincode, sex)",
+                        "step2": f"SQL hard filter (DOB if provided) + vector search (top {limit})",
+                        "step3": "Python soft scoring (postal, mincode, sex) - higher weights when no middle name",
                         "step4": "Final ranking (embedding + soft score)"
                     },
                     "candidates": scored_candidates,
@@ -243,8 +275,14 @@ if __name__ == "__main__":
         # Create HNSW index if needed
         await service.create_hnsw_index_if_not_exists()
         
-        # Test with sample query - filled with actual data
+        # Test with sample query - NO MIDDLE NAME to test the problem
         query = {
+            "legalFirstName": "MICHAEL", 
+            "legalLastName": "LEE", 
+            # "legalMiddleNames": "",  # No middle name provided
+            "sexCode": "M",       
+            "postalCode": "V3N1H4",
+            "mincode": "05757079"   
         }
         
         print("Searching for students...")
@@ -253,6 +291,7 @@ if __name__ == "__main__":
         # Performance metrics
         perf = results['performance']
         print(f"\n=== PERFORMANCE METRICS ===")
+        print(f"Query has middle name: {results['has_middle_name_in_query']}")
         print(f"Embedding Generation: {perf['embedding_time_seconds']} seconds")
         print(f"Vector Search: {perf['vector_search_time_seconds']} seconds")
         print(f"Soft Scoring: {perf['soft_scoring_time_seconds']} seconds")

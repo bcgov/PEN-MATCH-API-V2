@@ -105,16 +105,13 @@ class AzureSearchImportService:
     
     async def _save_embedding_to_db(self, student_id: str, embedding: List[float]):
         """Save embedding to PostgreSQL"""
-        conn = await self.db.get_connection()
-        try:
+        async with self.db.connection_pool.acquire() as conn:
             query = '''
                 UPDATE "api_pen_match_v2".student 
                 SET embedding = $1::float[]
                 WHERE student_id = $2
             '''
             await conn.execute(query, embedding, student_id)
-        finally:
-            await conn.close()
     
     def _generate_search_documents_batch(self, students: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Generate search documents for a batch of students"""
@@ -256,8 +253,7 @@ class AzureSearchImportService:
             for i, (first_name, last_name) in enumerate(target_names, 1):
                 print(f"\nProcessing name pair {i}/{len(target_names)}: {first_name} {last_name}")
                 
-                conn = await self.db.get_connection()
-                try:
+                async with self.db.connection_pool.acquire() as conn:
                     query = """
                         SELECT student_id, COALESCE(pen, 'NULL') as pen, 
                                COALESCE(legal_first_name, 'NULL') as legal_first_name,
@@ -323,9 +319,6 @@ class AzureSearchImportService:
                     
                     total_uploaded += uploaded_for_name
                     print(f"Completed {first_name} {last_name}: {uploaded_for_name} uploaded")
-                    
-                finally:
-                    await conn.close()
             
             print(f"\nName-based import completed: {total_uploaded} total students processed")
             return total_uploaded

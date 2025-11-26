@@ -19,7 +19,7 @@
       "vectorSearchProfile": "vector-profile"
     },
 
-    { "name": "dob", "type": "Edm.String", "filterable": true },
+    { "name": "dob", "type": "Edm.DateTimeOffset", "filterable": true },
     { "name": "sexCode", "type": "Edm.String", "filterable": true },
     { "name": "postalCode", "type": "Edm.String", "filterable": true },
     { "name": "mincode", "type": "Edm.String", "filterable": true },
@@ -41,22 +41,25 @@
           "type": "freshness",
           "fieldName": "dob",
           "boost": 5,
-          "interpolation": "quadratic"
+          "interpolation": "quadratic",
+          "freshness": {
+            "boostingDuration": "P30D"
+          }
         },
         {
-          "type": "freshness",
+          "type": "magnitude",
           "fieldName": "mincode",
           "boost": 2,
           "interpolation": "linear"
         },
         {
-          "type": "freshness",
+          "type": "magnitude",
           "fieldName": "postalCode",
           "boost": 1,
           "interpolation": "linear"
         },
         {
-          "type": "freshness",
+          "type": "magnitude",
           "fieldName": "sexCode",
           "boost": 1,
           "interpolation": "linear"

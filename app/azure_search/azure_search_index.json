@@ -33,35 +33,12 @@
       "name": "identity-ranking",
       "textWeights": {
         "weights": {
+          "legalFirstName": 3,
+          "legalLastName": 3,
+          "legalMiddleNames": 2,
           "content": 1
         }
-      },
-      "functions": [
-        {
-          "type": "freshness",
-          "fieldName": "dob",
-          "boost": 5,
-          "interpolation": "quadratic"
-        },
-        {
-          "type": "freshness",
-          "fieldName": "mincode",
-          "boost": 2,
-          "interpolation": "linear"
-        },
-        {
-          "type": "freshness",
-          "fieldName": "postalCode",
-          "boost": 1,
-          "interpolation": "linear"
-        },
-        {
-          "type": "freshness",
-          "fieldName": "sexCode",
-          "boost": 1,
-          "interpolation": "linear"
-        }
-      ]
+      }
     }
   ],
 

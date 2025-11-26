@@ -448,7 +448,17 @@ if __name__ == "__main__":
                     print(f"Final result: {result} total students processed with 5 columns")
                 elif sys.argv[1] == "names":
                     target_names = [
-                        ("MICHAEL", "LEE")
+                        ("MICHAEL", "LEE"),
+                        ("MICHAEL", "KIM"),
+                        ("DAVID", "LEE"),
+                        ("MICHAEL", "WANG"),
+                        ("JENNIFER", "LEE"),
+                        ("MICHAEL", "LI"),
+                        ("ROBERT", "LEE"),
+                        ("DAVID", "WANG"),
+                        ("MICHAEL", "CHEN"),
+                        ("JAMES", "LEE")
+
                     ]
                     print(f"Mode: Import all records matching {len(target_names)} name pairs with 5-column storage")
                     result = await service.import_all_records_by_names(target_names)

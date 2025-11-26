@@ -5,10 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
-import openai
 from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.core.exceptions import HttpResponseError
+from openai import AzureOpenAI
 
 from database.postgresql import PostgreSQLManager
 from config.settings import settings
@@ -33,10 +33,11 @@ class AzureSearchImportService:
             credential=self.credential
         )
         
-        # OpenAI embedding client
-        self.openai_client = openai.OpenAI(
+        # OpenAI embedding client - use AzureOpenAI like student_embedding.py
+        self.openai_client = AzureOpenAI(
             api_key=settings.openai_api_key,
-            base_url=settings.openai_api_base_embedding_3
+            api_version="2023-05-15",
+            azure_endpoint=settings.openai_api_base_embedding_3
         )
         
         # Processing setup
@@ -50,7 +51,7 @@ class AzureSearchImportService:
         print("AzureSearchImportService initialized successfully")
     
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
-        """Generate embedding using text-embedding-03-large model"""
+        """Generate embedding using text-embedding-3-large model"""
         # Format: [name: first name last name, middlename: middle name]
         first_name = student.get('legalFirstName', '').strip()
         last_name = student.get('legalLastName', '').strip()
@@ -66,11 +67,15 @@ class AzureSearchImportService:
         name_part = f"{first_name} {last_name}".strip()
         text = f"[name: {name_part}, middlename: {middle_names}]"
         
-        response = self.openai_client.embeddings.create(
-            model="text-embedding-03-large",
-            input=text
-        )
-        return response.data[0].embedding
+        try:
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-large",
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            print(f"Embedding error for student {student.get('student_id')}: {e}")
+            raise
     
     def _prepare_search_document(self, student: Dict[str, Any], embedding: List[float]) -> Dict[str, Any]:
         """Prepare student data for Azure Search index"""

@@ -175,36 +175,41 @@ class AzureSearchImportService:
         """Import single batch to Azure Search and save embeddings"""
         print(f"Starting import for batch at offset {offset} with batch size {batch_size}")
         
-        students = await self.db.fetch_students_batch(offset, batch_size)
-        if not students:
-            print(f"No students found at offset {offset}")
-            return 0
-        
-        uploaded = 0
-        for student in students:
-            try:
-                student_id = student.get("student_id")
-                print(f"Processing student: {student_id}")
-                
-                embedding = self.generate_embedding(student)
-                document = self._prepare_search_document(student, embedding)
-                
-                # Upload to Azure Search
-                result = self.search_client.upload_documents([document])
-                if result[0].succeeded:
-                    # Save embedding to PostgreSQL
-                    await self._save_embedding_to_db(student_id, embedding)
-                    uploaded += 1
-                    print(f"Successfully processed: {student_id}")
-                else:
-                    print(f"Failed to upload: {student_id}")
+        await self.db.create_pool()
+        try:
+            students = await self.db.fetch_students_batch(offset, batch_size)
+            if not students:
+                print(f"No students found at offset {offset}")
+                return 0
+            
+            uploaded = 0
+            for student in students:
+                try:
+                    student_id = student.get("student_id")
+                    print(f"Processing student: {student_id}")
                     
-            except Exception as e:
-                print(f"Error processing student {student.get('student_id')}: {e}")
-                continue
+                    embedding = self.generate_embedding(student)
+                    document = self._prepare_search_document(student, embedding)
+                    
+                    # Upload to Azure Search
+                    result = self.search_client.upload_documents([document])
+                    if result[0].succeeded:
+                        # Save embedding to PostgreSQL
+                        await self._save_embedding_to_db(student_id, embedding)
+                        uploaded += 1
+                        print(f"Successfully processed: {student_id}")
+                    else:
+                        print(f"Failed to upload: {student_id}")
+                        
+                except Exception as e:
+                    print(f"Error processing student {student.get('student_id')}: {e}")
+                    continue
+            
+            print(f"Batch completed: {uploaded}/{len(students)} processed")
+            return uploaded
         
-        print(f"Batch completed: {uploaded}/{len(students)} processed")
-        return uploaded
+        finally:
+            await self.db.close()
 
     async def import_all_students(self, batch_size=1000):
         """Import all students with parallel processing"""
@@ -255,7 +260,8 @@ class AzureSearchImportService:
                 
                 async with self.db.connection_pool.acquire() as conn:
                     query = """
-                        SELECT student_id, COALESCE(pen, 'NULL') as pen, 
+                        SELECT student_id, 
+                               COALESCE(pen, 'NULL') as pen, 
                                COALESCE(legal_first_name, 'NULL') as legal_first_name,
                                COALESCE(legal_last_name, 'NULL') as legal_last_name, 
                                COALESCE(legal_middle_names, 'NULL') as legal_middle_names,
@@ -263,7 +269,7 @@ class AzureSearchImportService:
                                COALESCE(sex_code, 'NULL') as sex_code,
                                COALESCE(postal_code, 'NULL') as postal_code, 
                                COALESCE(mincode, 'NULL') as mincode,
-                               COALESCE(grade, 'NULL') as grade,
+                               COALESCE(grade_code, 'NULL') as grade_code,
                                COALESCE(LPAD(local_id::text, 8, '0'), 'NULL') as local_id
                         FROM "api_pen_match_v2".student 
                         WHERE LOWER(TRIM(legal_first_name)) = LOWER($1) 
@@ -284,7 +290,7 @@ class AzureSearchImportService:
                             student_id = row["student_id"]
                             print(f"  Processing record {j}/{len(rows)} - Student ID: {student_id}")
                             
-                            # Create student object
+                            # Create student object with correct field mapping
                             student = {
                                 "student_id": student_id,
                                 "pen": row["pen"],
@@ -295,7 +301,7 @@ class AzureSearchImportService:
                                 "sexCode": row["sex_code"],
                                 "postalCode": row["postal_code"],
                                 "mincode": row["mincode"],
-                                "grade": row["grade"],
+                                "grade": row["grade_code"],
                                 "localID": row["local_id"]
                             }
                             

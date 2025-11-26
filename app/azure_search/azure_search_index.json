@@ -1,44 +1,15 @@
 {
   "name": "student-index",
   "fields": [
-    {
-      "name": "id",
-      "type": "Edm.String",
-      "key": true,
-      "filterable": true
-    },
-    {
-      "name": "student_id",
-      "type": "Edm.String",
-      "filterable": true
-    },
-    {
-      "name": "pen",
-      "type": "Edm.String",
-      "filterable": true
-    },
+    { "name": "id", "type": "Edm.String", "key": true, "filterable": true },
+    { "name": "student_id", "type": "Edm.String", "filterable": true },
+    { "name": "pen", "type": "Edm.String", "filterable": true },
 
-    {
-      "name": "legalFirstName",
-      "type": "Edm.String",
-      "searchable": true
-    },
-    {
-      "name": "legalMiddleNames",
-      "type": "Edm.String",
-      "searchable": true
-    },
-    {
-      "name": "legalLastName",
-      "type": "Edm.String",
-      "searchable": true
-    },
+    { "name": "legalFirstName", "type": "Edm.String", "searchable": true },
+    { "name": "legalMiddleNames", "type": "Edm.String", "searchable": true },
+    { "name": "legalLastName", "type": "Edm.String", "searchable": true },
 
-    {
-      "name": "content",
-      "type": "Edm.String",
-      "searchable": true
-    },
+    { "name": "content", "type": "Edm.String", "searchable": true },
 
     {
       "name": "nameEmbedding",
@@ -48,37 +19,13 @@
       "vectorSearchProfile": "vector-profile"
     },
 
-    {
-      "name": "dob",
-      "type": "Edm.String",
-      "filterable": true
-    },
-    {
-      "name": "sexCode",
-      "type": "Edm.String",
-      "filterable": true
-    },
-    {
-      "name": "postalCode",
-      "type": "Edm.String",
-      "filterable": true
-    },
-    {
-      "name": "mincode",
-      "type": "Edm.String",
-      "filterable": true
-    },
+    { "name": "dob", "type": "Edm.String", "filterable": true },
+    { "name": "sexCode", "type": "Edm.String", "filterable": true },
+    { "name": "postalCode", "type": "Edm.String", "filterable": true },
+    { "name": "mincode", "type": "Edm.String", "filterable": true },
 
-    {
-      "name": "grade",
-      "type": "Edm.String",
-      "filterable": true
-    },
-    {
-      "name": "localID",
-      "type": "Edm.String",
-      "filterable": true
-    }
+    { "name": "grade", "type": "Edm.String", "filterable": true },
+    { "name": "localID", "type": "Edm.String", "filterable": true }
   ],
 
   "scoringProfiles": [
@@ -91,39 +38,27 @@
       },
       "functions": [
         {
-          "type": "magnitude",
+          "type": "freshness",
           "fieldName": "dob",
           "boost": 5,
-          "boostingRangeStart": 0,
-          "boostingRangeEnd": 1,
-          "constantBoostBeyondRange": true,
-          "interpolation": "linear"
+          "interpolation": "quadratic"
         },
         {
-          "type": "magnitude",
+          "type": "freshness",
           "fieldName": "mincode",
           "boost": 2,
-          "boostingRangeStart": 0,
-          "boostingRangeEnd": 1,
-          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         },
         {
-          "type": "magnitude",
+          "type": "freshness",
           "fieldName": "postalCode",
           "boost": 1,
-          "boostingRangeStart": 0,
-          "boostingRangeEnd": 1,
-          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         },
         {
-          "type": "magnitude",
+          "type": "freshness",
           "fieldName": "sexCode",
           "boost": 1,
-          "boostingRangeStart": 0,
-          "boostingRangeEnd": 1,
-          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         }
       ]
@@ -132,10 +67,7 @@
 
   "vectorSearch": {
     "profiles": [
-      {
-        "name": "vector-profile",
-        "algorithm": "hnsw-algorithm"
-      }
+      { "name": "vector-profile", "algorithm": "hnsw-algorithm" }
     ],
     "algorithms": [
       {

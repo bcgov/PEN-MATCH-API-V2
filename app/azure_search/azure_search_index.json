@@ -7,13 +7,32 @@
       "key": true,
       "filterable": true
     },
+    {
+      "name": "student_id",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "pen",
+      "type": "Edm.String",
+      "filterable": true
+    },
 
-    { "name": "student_id", "type": "Edm.String", "filterable": true },
-    { "name": "pen",        "type": "Edm.String", "filterable": true },
-
-    { "name": "legalFirstName",  "type": "Edm.String", "searchable": true },
-    { "name": "legalMiddleNames","type": "Edm.String", "searchable": true },
-    { "name": "legalLastName",   "type": "Edm.String", "searchable": true },
+    {
+      "name": "legalFirstName",
+      "type": "Edm.String",
+      "searchable": true
+    },
+    {
+      "name": "legalMiddleNames",
+      "type": "Edm.String",
+      "searchable": true
+    },
+    {
+      "name": "legalLastName",
+      "type": "Edm.String",
+      "searchable": true
+    },
 
     {
       "name": "content",
@@ -25,17 +44,41 @@
       "name": "nameEmbedding",
       "type": "Collection(Edm.Single)",
       "searchable": true,
-      "vectorSearchDimensions": 1536,
+      "dimensions": 3072,
       "vectorSearchProfile": "vector-profile"
     },
 
-    { "name": "dob",        "type": "Edm.String", "filterable": true },
-    { "name": "sexCode",    "type": "Edm.String", "filterable": true },
-    { "name": "postalCode", "type": "Edm.String", "filterable": true },
-    { "name": "mincode",    "type": "Edm.String", "filterable": true },
+    {
+      "name": "dob",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "sexCode",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "postalCode",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "mincode",
+      "type": "Edm.String",
+      "filterable": true
+    },
 
-    { "name": "grade",      "type": "Edm.String", "filterable": true },
-    { "name": "localID",    "type": "Edm.String", "filterable": true }
+    {
+      "name": "grade",
+      "type": "Edm.String",
+      "filterable": true
+    },
+    {
+      "name": "localID",
+      "type": "Edm.String",
+      "filterable": true
+    }
   ],
 
   "scoringProfiles": [
@@ -51,24 +94,36 @@
           "type": "magnitude",
           "fieldName": "dob",
           "boost": 5,
+          "boostingRangeStart": 0,
+          "boostingRangeEnd": 1,
+          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         },
         {
           "type": "magnitude",
           "fieldName": "mincode",
           "boost": 2,
+          "boostingRangeStart": 0,
+          "boostingRangeEnd": 1,
+          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         },
         {
           "type": "magnitude",
           "fieldName": "postalCode",
           "boost": 1,
+          "boostingRangeStart": 0,
+          "boostingRangeEnd": 1,
+          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         },
         {
           "type": "magnitude",
           "fieldName": "sexCode",
           "boost": 1,
+          "boostingRangeStart": 0,
+          "boostingRangeEnd": 1,
+          "constantBoostBeyondRange": true,
           "interpolation": "linear"
         }
       ]

@@ -7,7 +7,7 @@ from azure.search.documents.indexes.models import SearchIndex
 # CONFIGURATION
 # -----------------------------------------------------------
 SEARCH_SERVICE_ENDPOINT = "https://pen-match-api-v2-search.search.windows.net"
-INDEX_JSON_PATH = "app/azure_search/azure_search_index.json"   # <- your schema file
+INDEX_JSON_PATH = "azure_search/azure_search_index.json"   # <- your schema file
 INDEX_NAME = "student-index"
 
 # -----------------------------------------------------------

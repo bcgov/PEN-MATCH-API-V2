@@ -52,7 +52,7 @@ class AzureSearchImportService:
     
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
         """Generate embedding using text-embedding-3-large model"""
-        # Format: [name: first name last name, middlename: middle name]
+        # Format: Name: first last, Middlename: middle
         first_name = student.get('legalFirstName', '').strip()
         last_name = student.get('legalLastName', '').strip()
         middle_names = student.get('legalMiddleNames', '').strip()
@@ -65,7 +65,9 @@ class AzureSearchImportService:
             middle_names = ''
         
         name_part = f"{first_name} {last_name}".strip()
-        text = f"[name: {name_part}, middlename: {middle_names}]"
+        text = f"Name: {name_part}, Middlename: {middle_names}"
+        
+        print(f"Generating embedding for: {text}")
         
         try:
             response = self.openai_client.embeddings.create(
@@ -109,14 +111,18 @@ class AzureSearchImportService:
         }
     
     async def _save_embedding_to_db(self, student_id: str, embedding: List[float]):
-        """Save embedding to PostgreSQL"""
-        async with self.db.connection_pool.acquire() as conn:
-            query = '''
-                UPDATE "api_pen_match_v2".student 
-                SET embedding = $1::float[]
-                WHERE student_id = $2::uuid
-            '''
-            await conn.execute(query, embedding, student_id)
+        """Save embedding to PostgreSQL - disabled until embedding column exists"""
+        # TODO: Add embedding column to student table first
+        # ALTER TABLE "api_pen_match_v2".student ADD COLUMN embedding float[] DEFAULT NULL;
+        # 
+        # async with self.db.connection_pool.acquire() as conn:
+        #     query = '''
+        #         UPDATE "api_pen_match_v2".student 
+        #         SET embedding = $1::float[]
+        #         WHERE student_id = $2::uuid
+        #     '''
+        #     await conn.execute(query, embedding, student_id)
+        pass
     
     def _generate_search_documents_batch(self, students: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Generate search documents for a batch of students"""
@@ -167,7 +173,7 @@ class AzureSearchImportService:
                 if result.succeeded:
                     uploaded_count += 1
                     
-                    # Save embedding to PostgreSQL
+                    # Save embedding to PostgreSQL (disabled until column exists)
                     matching_result = next(r for r in successful_results if r['document']['id'] == result.key)
                     await self._save_embedding_to_db(matching_result['student_id'], matching_result['embedding'])
                 else:
@@ -203,7 +209,7 @@ class AzureSearchImportService:
                     # Upload to Azure Search
                     result = self.search_client.upload_documents([document])
                     if result[0].succeeded:
-                        # Save embedding to PostgreSQL
+                        # Save embedding to PostgreSQL (disabled until column exists)
                         await self._save_embedding_to_db(student_id, embedding)
                         uploaded += 1
                         print(f"Successfully processed: {student_id}")
@@ -321,7 +327,7 @@ class AzureSearchImportService:
                             # Upload to Azure Search
                             result = self.search_client.upload_documents([document])
                             if result[0].succeeded:
-                                # Save embedding to PostgreSQL
+                                # Save embedding to PostgreSQL (disabled until column exists)
                                 await self._save_embedding_to_db(student_id, embedding)
                                 uploaded_for_name += 1
                                 print(f"    Successfully processed: {student_id}")

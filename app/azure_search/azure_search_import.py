@@ -50,9 +50,10 @@ class AzureSearchImportService:
         print(f"Embedding endpoint: {settings.openai_api_base_embedding_3}")
         print("AzureSearchImportService initialized successfully")
     
+    
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
         """Generate embedding using text-embedding-3-large model"""
-        # Format: Name: first last, Middlename: middle
+        # Format: Name: FIRST MIDDLE LAST.
         first_name = student.get('legalFirstName', '').strip()
         last_name = student.get('legalLastName', '').strip()
         middle_names = student.get('legalMiddleNames', '').strip()
@@ -64,8 +65,17 @@ class AzureSearchImportService:
         if middle_names == 'NULL':
             middle_names = ''
         
-        name_part = f"{first_name} {last_name}".strip()
-        text = f"Name: {name_part}, Middlename: {middle_names}"
+        # Build full name with middle names in between
+        name_parts = []
+        if first_name:
+            name_parts.append(first_name)
+        if middle_names:
+            name_parts.append(middle_names)
+        if last_name:
+            name_parts.append(last_name)
+        
+        full_name = ' '.join(name_parts)
+        text = f"Name: {full_name}."
         
         print(f"Generating embedding for: {text}")
         
@@ -78,8 +88,7 @@ class AzureSearchImportService:
         except Exception as e:
             print(f"Embedding error for student {student.get('student_id')}: {e}")
             raise
-
-            
+                
     def _prepare_search_document(self, student: Dict[str, Any], embedding: List[float]) -> Dict[str, Any]:
         """Prepare student data for Azure Search index"""
         # Build comprehensive content field

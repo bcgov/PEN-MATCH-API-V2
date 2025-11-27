@@ -94,13 +94,26 @@ class AzureSearchQuery:
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] {message}\n")
 
+
+
     def generate_name_embedding(self, first_name: str, last_name: str, middle_names: str = "") -> Tuple[List[float], float]:
         """Generate embedding for name search"""
         start_time = time.perf_counter()
-        name_part = f"{first_name} {last_name}".strip()
-        text = f"Name: {name_part}, Middlename: {middle_names}"
+        
+        # Format: Name: FIRST MIDDLE LAST.
+        name_parts = []
+        if first_name.strip():
+            name_parts.append(first_name.strip())
+        if middle_names.strip():
+            name_parts.append(middle_names.strip())
+        if last_name.strip():
+            name_parts.append(last_name.strip())
+        
+        full_name = ' '.join(name_parts)
+        text = f"Name: {full_name}."
         
         self._log_debug(f"Generating embedding for: {text}")
+        self._log_debug(f"Input breakdown - First: '{first_name}', Last: '{last_name}', Middle: '{middle_names}'")
         
         try:
             response = self.openai_client.embeddings.create(
@@ -109,11 +122,14 @@ class AzureSearchQuery:
             )
             embedding_time = (time.perf_counter() - start_time) * 1000
             self._log_debug(f"Embedding generated in {embedding_time:.2f}ms")
+            self._log_debug(f"First 5 embedding values: {response.data[0].embedding[:5]}")
             return response.data[0].embedding, embedding_time
         except Exception as e:
             embedding_time = (time.perf_counter() - start_time) * 1000
             self._log_debug(f"Embedding error after {embedding_time:.2f}ms: {e}")
             raise
+
+
 
     def _calculate_field_similarity(self, query_value: str, candidate_value: str, field_type: str = "exact") -> float:
         """Calculate field similarity with thresholds"""

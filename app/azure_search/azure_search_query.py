@@ -110,7 +110,7 @@ class AzureSearchQuery:
             name_parts.append(last_name.strip())
         
         full_name = ' '.join(name_parts)
-        text = f"Name: {full_name}."
+        text = f"{full_name}."
         
         self._log_debug(f"Generating embedding for: {text}")
         self._log_debug(f"Input breakdown - First: '{first_name}', Last: '{last_name}', Middle: '{middle_names}'")

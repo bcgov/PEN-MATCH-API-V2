@@ -50,7 +50,7 @@ class AzureSearchImportService:
         print(f"Embedding endpoint: {settings.openai_api_base_embedding_3}")
         print("AzureSearchImportService initialized successfully")
     
-    
+
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
         """Generate embedding using text-embedding-3-large model"""
         # Format: Name: FIRST MIDDLE LAST.
@@ -75,7 +75,7 @@ class AzureSearchImportService:
             name_parts.append(last_name)
         
         full_name = ' '.join(name_parts)
-        text = f"Name: {full_name}."
+        text = f"{full_name}."
         
         print(f"Generating embedding for: {text}")
         

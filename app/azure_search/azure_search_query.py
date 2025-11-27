@@ -395,3 +395,57 @@ class AzureSearchQuery:
         print(f"   Mincode: {result.mincode}")
         print(f"   Score: {result.search_score:.4f} ({result.match_type})")
 
+
+# Test functions
+async def run_test_suite():
+    """Run comprehensive test suite"""
+    search_service = AzureSearchQuery()
+    
+    # Base query
+    base_query = {
+        "legalFirstName": "MICHAEL",
+        "legalLastName": "LEE",
+    }
+    
+    test_cases = [
+        # Correct Query
+        ("First Name + Last Name", base_query),
+        ("First Name + Last Name + Middle", {**base_query, "legalMiddleNames": "RICHARD"}),
+        ("First Name + Last Name + Postal", {**base_query, "postalCode": "V3N1H4"}),
+        ("First Name + Last Name + Mincode", {**base_query, "mincode": "05757079"}),
+        ("First Name + Last Name + DOB", {**base_query, "dob": "2001-02-10"}),
+        ("First Name + Last Name + Sex", {**base_query, "sexCode": "M"}),
+        ("First Name + Last Name + ALL", {
+            **base_query, 
+            "legalMiddleNames": "RICHARD",
+            "dob": "2001-02-10",
+            "sexCode": "M",
+            "postalCode": "V3N1H4",
+            "mincode": "05757079"
+        }),
+        
+        # Typo Query
+        ("Typo: MICHAL LE + Middle RICHAR", {
+            "legalFirstName": "MICHAL",
+            "legalLastName": "LE",
+            "legalMiddleNames": "RICHAR"
+        }),
+        ("Typo: Postal V3N4H1", {**base_query, "postalCode": "V3N4H1"}),
+        ("Typo: Mincode 057079", {**base_query, "mincode": "057079"}),
+        
+        # Direct lookup
+        ("Direct PEN Lookup", {"pen": "124809765"}),
+    ]
+    
+    for test_name, query in test_cases:
+        print(f"\n{'='*60}")
+        print(f"TEST: {test_name}")
+        print(f"Query: {query}")
+        print(f"{'='*60}")
+        
+        response = await search_service.search_students(query)
+        search_service.print_search_response(response)
+
+
+if __name__ == "__main__":
+    asyncio.run(run_test_suite())

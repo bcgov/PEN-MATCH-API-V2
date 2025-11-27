@@ -1,11 +1,12 @@
 import asyncio
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
 from openai import AzureOpenAI
+import difflib
 
 from config.settings import settings
 
@@ -23,11 +24,17 @@ class SearchResult:
     mincode: Optional[str]
     grade: Optional[str]
     local_id: Optional[str]
-    content: Optional[str]
     search_score: float
-    vector_score: Optional[float] = None
-    keyword_score: Optional[float] = None
-    metadata_boost: Optional[float] = None
+    match_type: str = "candidate"  # "perfect" or "candidate"
+
+@dataclass
+class SearchResponse:
+    """Search response with perfect matches and candidates"""
+    perfect_matches: List[SearchResult]
+    candidates: List[SearchResult]
+    query: Dict[str, Any]
+    total_results: int
+    search_method: str
 
 class AzureSearchQuery:
     def __init__(self):
@@ -66,314 +73,325 @@ class AzureSearchQuery:
             print(f"Embedding generation error: {e}")
             raise
 
-    async def hybrid_search(self, 
-                           first_name: str,
-                           last_name: str,
-                           middle_names: str = "",
-                           dob: Optional[str] = None,
-                           sex_code: Optional[str] = None,
-                           postal_code: Optional[str] = None,
-                           mincode: Optional[str] = None,
-                           top: int = 20,
-                           vector_weight: float = 0.6,
-                           keyword_weight: float = 0.3,
-                           metadata_weight: float = 0.1) -> List[SearchResult]:
+    def _calculate_field_similarity(self, query_value: str, candidate_value: str, field_type: str = "exact") -> float:
+        """Calculate field similarity based on field type"""
+        if not query_value or not candidate_value:
+            return 0.0
+        
+        query_clean = str(query_value).strip().upper()
+        candidate_clean = str(candidate_value).strip().upper()
+        
+        if query_clean == candidate_clean:
+            return 1.0
+        
+        if field_type == "postal":
+            # Postal code partial matching
+            if len(query_clean) >= 3 and len(candidate_clean) >= 3:
+                if query_clean[:3] == candidate_clean[:3]:
+                    return 0.7
+            similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
+            return similarity if similarity > 0.6 else 0.0
+        
+        elif field_type == "mincode":
+            # Mincode partial matching
+            similarity = difflib.SequenceMatcher(None, query_clean, candidate_clean).ratio()
+            return similarity if similarity > 0.8 else 0.0
+        
+        else:
+            # Exact match for other fields
+            return 0.0
+
+    def _is_perfect_match(self, query: Dict[str, Any], candidate: Dict[str, Any]) -> bool:
+        """Check if candidate is a perfect match for all provided fields"""
+        
+        # Check all provided fields for exact match
+        field_mapping = {
+            "pen": "pen",
+            "legalFirstName": "legalFirstName", 
+            "legalLastName": "legalLastName",
+            "legalMiddleNames": "legalMiddleNames",
+            "dob": "dob",
+            "sexCode": "sexCode",
+            "postalCode": "postalCode",
+            "mincode": "mincode",
+            "grade": "grade",
+            "localID": "localID"
+        }
+        
+        for query_field, candidate_field in field_mapping.items():
+            query_value = query.get(query_field)
+            candidate_value = candidate.get(candidate_field)
+            
+            if query_value and query_value != 'NULL':
+                if not candidate_value or candidate_value == 'NULL':
+                    return False
+                
+                # Special handling for postal and mincode
+                if query_field in ["postalCode", "mincode"]:
+                    similarity = self._calculate_field_similarity(
+                        query_value, candidate_value, 
+                        "postal" if query_field == "postalCode" else "mincode"
+                    )
+                    if similarity < 1.0:  # Must be exact for perfect match
+                        return False
+                else:
+                    # Exact match required
+                    if str(query_value).strip().upper() != str(candidate_value).strip().upper():
+                        return False
+        
+        return True
+
+    def _calculate_candidate_score(self, query: Dict[str, Any], candidate: Dict[str, Any], base_score: float) -> float:
+        """Calculate candidate score based on field matches"""
+        
+        score = base_score  # Start with search relevance score
+        
+        # High priority fields
+        if query.get("dob") and candidate.get("dob"):
+            if query["dob"] == candidate["dob"]:
+                score += 0.3  # DOB exact match bonus
+        
+        # Bonus points for other fields
+        if query.get("sexCode") and candidate.get("sexCode"):
+            if query["sexCode"].upper() == candidate["sexCode"].upper():
+                score += 0.1
+        
+        if query.get("postalCode") and candidate.get("postalCode"):
+            postal_sim = self._calculate_field_similarity(
+                query["postalCode"], candidate["postalCode"], "postal"
+            )
+            score += postal_sim * 0.15
+        
+        if query.get("mincode") and candidate.get("mincode"):
+            mincode_sim = self._calculate_field_similarity(
+                query["mincode"], candidate["mincode"], "mincode"
+            )
+            score += mincode_sim * 0.15
+        
+        if query.get("grade") and candidate.get("grade"):
+            if query["grade"] == candidate["grade"]:
+                score += 0.05
+        
+        return score
+
+    async def search_students(self, query: Dict[str, Any]) -> SearchResponse:
         """
-        Hybrid search combining vector, keyword, and metadata filtering
-        
-        Strategy:
-        - 60% vector similarity (semantic name matching)
-        - 30% keyword score (lexical fallback) 
-        - 10% metadata match (DOB, postal, etc.)
+        Main search function following the specified methodology
         """
         
-        # 1. Generate embedding for vector search
-        name_embedding = self.generate_name_embedding(first_name, last_name, middle_names)
+        # 1. Direct lookup by PEN or Student ID
+        if query.get("pen") or query.get("student_id"):
+            return await self._direct_lookup(query)
         
-        # 2. Build keyword search text
-        keyword_text = f"{first_name} {middle_names} {last_name}".strip()
-        
-        # 3. Build filters for metadata
-        filters = []
-        if dob:
-            filters.append(f"dob eq '{dob}'")
-        if sex_code:
-            filters.append(f"sexCode eq '{sex_code}'")
-        if postal_code:
-            filters.append(f"postalCode eq '{postal_code}'")
-        if mincode:
-            filters.append(f"mincode eq '{mincode}'")
-        
-        filter_expression = " and ".join(filters) if filters else None
-        
-        # 4. Create vector query
-        vector_query = VectorizedQuery(
-            vector=name_embedding,
-            k_nearest_neighbors=top * 2,  # Get more for reranking
-            fields="nameEmbedding"
-        )
+        # 2. Hybrid search with name as dominant key
+        return await self._hybrid_name_search(query)
+
+    async def _direct_lookup(self, query: Dict[str, Any]) -> SearchResponse:
+        """Direct lookup by PEN or Student ID"""
         
         try:
+            filter_expr = None
+            if query.get("pen"):
+                filter_expr = f"pen eq '{query['pen']}'"
+            elif query.get("student_id"):
+                filter_expr = f"student_id eq '{query['student_id']}'"
+            
+            results = self.search_client.search(
+                search_text="*",
+                filter=filter_expr,
+                top=1,
+                select=[
+                    "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
+                    "legalLastName", "dob", "sexCode", "postalCode", "mincode", 
+                    "grade", "localID"
+                ]
+            )
+            
+            search_results = []
+            for result in results:
+                search_result = SearchResult(
+                    student_id=result.get('student_id', ''),
+                    pen=result.get('pen'),
+                    legal_first_name=result.get('legalFirstName'),
+                    legal_middle_names=result.get('legalMiddleNames'),
+                    legal_last_name=result.get('legalLastName'),
+                    dob=result.get('dob'),
+                    sex_code=result.get('sexCode'),
+                    postal_code=result.get('postalCode'),
+                    mincode=result.get('mincode'),
+                    grade=result.get('grade'),
+                    local_id=result.get('localID'),
+                    search_score=1.0,
+                    match_type="perfect"
+                )
+                search_results.append(search_result)
+            
+            return SearchResponse(
+                perfect_matches=search_results,
+                candidates=[],
+                query=query,
+                total_results=len(search_results),
+                search_method="direct_lookup"
+            )
+            
+        except Exception as e:
+            print(f"Direct lookup error: {e}")
+            return SearchResponse([], [], query, 0, "direct_lookup_failed")
+
+    async def _hybrid_name_search(self, query: Dict[str, Any]) -> SearchResponse:
+        """Hybrid search using name + other fields"""
+        
+        # Validate required fields
+        if not query.get("legalFirstName") or not query.get("legalLastName"):
+            return SearchResponse([], [], query, 0, "missing_required_fields")
+        
+        try:
+            # 1. Generate embedding for vector search
+            name_embedding = self.generate_name_embedding(
+                query["legalFirstName"], 
+                query["legalLastName"], 
+                query.get("legalMiddleNames", "")
+            )
+            
+            # 2. Build keyword search text
+            keyword_text = f"{query['legalFirstName']} {query.get('legalMiddleNames', '')} {query['legalLastName']}".strip()
+            
+            # 3. Build hard filters for high priority fields
+            filters = []
+            
+            # DOB as second key - exact match if provided
+            if query.get("dob"):
+                filters.append(f"dob eq '{query['dob']}'")
+            
+            # Sex filter if provided
+            if query.get("sexCode"):
+                filters.append(f"sexCode eq '{query['sexCode']}'")
+            
+            filter_expression = " and ".join(filters) if filters else None
+            
+            # 4. Create vector query
+            vector_query = VectorizedQuery(
+                vector=name_embedding,
+                k_nearest_neighbors=100,  # Get more for processing
+                fields="nameEmbedding"
+            )
+            
             # 5. Execute hybrid search
             results = self.search_client.search(
                 search_text=keyword_text,
                 vector_queries=[vector_query],
-                top=top * 2,  # Get more results for reranking
+                top=100,
                 filter=filter_expression,
                 select=[
                     "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
                     "legalLastName", "dob", "sexCode", "postalCode", "mincode", 
-                    "grade", "localID", "content"
+                    "grade", "localID"
                 ],
-                scoring_profile="identity-ranking"
+                scoring_profile="identity-ranking" if filter_expression is None else None
             )
             
-            # 6. Process and rerank results
-            search_results = []
+            # 6. Process results and categorize
+            perfect_matches = []
+            candidates = []
+            
             for result in results:
-                # Calculate individual scores (simplified)
-                search_score = result.get('@search.score', 0)
+                candidate_data = {
+                    "student_id": result.get('student_id', ''),
+                    "pen": result.get('pen'),
+                    "legalFirstName": result.get('legalFirstName'),
+                    "legalMiddleNames": result.get('legalMiddleNames'),
+                    "legalLastName": result.get('legalLastName'),
+                    "dob": result.get('dob'),
+                    "sexCode": result.get('sexCode'),
+                    "postalCode": result.get('postalCode'),
+                    "mincode": result.get('mincode'),
+                    "grade": result.get('grade'),
+                    "localID": result.get('localID')
+                }
                 
-                # Create SearchResult object
+                base_score = result.get('@search.score', 0)
+                final_score = self._calculate_candidate_score(query, candidate_data, base_score)
+                
                 search_result = SearchResult(
-                    student_id=result.get('student_id', ''),
-                    pen=result.get('pen'),
-                    legal_first_name=result.get('legalFirstName'),
-                    legal_middle_names=result.get('legalMiddleNames'),
-                    legal_last_name=result.get('legalLastName'),
-                    dob=result.get('dob'),
-                    sex_code=result.get('sexCode'),
-                    postal_code=result.get('postalCode'),
-                    mincode=result.get('mincode'),
-                    grade=result.get('grade'),
-                    local_id=result.get('localID'),
-                    content=result.get('content'),
-                    search_score=search_score
+                    student_id=candidate_data['student_id'],
+                    pen=candidate_data['pen'],
+                    legal_first_name=candidate_data['legalFirstName'],
+                    legal_middle_names=candidate_data['legalMiddleNames'],
+                    legal_last_name=candidate_data['legalLastName'],
+                    dob=candidate_data['dob'],
+                    sex_code=candidate_data['sexCode'],
+                    postal_code=candidate_data['postalCode'],
+                    mincode=candidate_data['mincode'],
+                    grade=candidate_data['grade'],
+                    local_id=candidate_data['localID'],
+                    search_score=final_score
                 )
                 
-                search_results.append(search_result)
+                # Check if perfect match
+                if self._is_perfect_match(query, candidate_data):
+                    search_result.match_type = "perfect"
+                    perfect_matches.append(search_result)
+                else:
+                    search_result.match_type = "candidate"
+                    candidates.append(search_result)
             
-            # 7. Apply final ranking and return top results
-            return search_results[:top]
+            # 7. Sort by score
+            perfect_matches.sort(key=lambda x: x.search_score, reverse=True)
+            candidates.sort(key=lambda x: x.search_score, reverse=True)
             
-        except Exception as e:
-            print(f"Search error: {e}")
-            return []
-
-    async def vector_only_search(self, 
-                                first_name: str, 
-                                last_name: str, 
-                                middle_names: str = "",
-                                top: int = 10) -> List[SearchResult]:
-        """Pure vector search for name similarity"""
-        
-        name_embedding = self.generate_name_embedding(first_name, last_name, middle_names)
-        
-        vector_query = VectorizedQuery(
-            vector=name_embedding,
-            k_nearest_neighbors=top,
-            fields="nameEmbedding"
-        )
-        
-        try:
-            results = self.search_client.search(
-                search_text="*",
-                vector_queries=[vector_query],
-                top=top,
-                select=[
-                    "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
-                    "legalLastName", "dob", "sexCode", "postalCode", "mincode", 
-                    "grade", "localID", "content"
-                ]
-            )
-            
-            search_results = []
-            for result in results:
-                search_result = SearchResult(
-                    student_id=result.get('student_id', ''),
-                    pen=result.get('pen'),
-                    legal_first_name=result.get('legalFirstName'),
-                    legal_middle_names=result.get('legalMiddleNames'),
-                    legal_last_name=result.get('legalLastName'),
-                    dob=result.get('dob'),
-                    sex_code=result.get('sexCode'),
-                    postal_code=result.get('postalCode'),
-                    mincode=result.get('mincode'),
-                    grade=result.get('grade'),
-                    local_id=result.get('localID'),
-                    content=result.get('content'),
-                    search_score=result.get('@search.score', 0)
+            # 8. Apply business rules
+            if len(perfect_matches) == 1 and len(candidates) == 0:
+                # Single perfect match - return as perfect match
+                return SearchResponse(
+                    perfect_matches=perfect_matches,
+                    candidates=[],
+                    query=query,
+                    total_results=1,
+                    search_method="single_perfect_match"
                 )
-                search_results.append(search_result)
-            
-            return search_results
-            
-        except Exception as e:
-            print(f"Vector search error: {e}")
-            return []
-
-    async def keyword_only_search(self, 
-                                 query_text: str,
-                                 top: int = 10) -> List[SearchResult]:
-        """Pure keyword search fallback"""
-        
-        try:
-            results = self.search_client.search(
-                search_text=query_text,
-                top=top,
-                select=[
-                    "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
-                    "legalLastName", "dob", "sexCode", "postalCode", "mincode", 
-                    "grade", "localID", "content"
-                ],
-                scoring_profile="identity-ranking"
-            )
-            
-            search_results = []
-            for result in results:
-                search_result = SearchResult(
-                    student_id=result.get('student_id', ''),
-                    pen=result.get('pen'),
-                    legal_first_name=result.get('legalFirstName'),
-                    legal_middle_names=result.get('legalMiddleNames'),
-                    legal_last_name=result.get('legalLastName'),
-                    dob=result.get('dob'),
-                    sex_code=result.get('sexCode'),
-                    postal_code=result.get('postalCode'),
-                    mincode=result.get('mincode'),
-                    grade=result.get('grade'),
-                    local_id=result.get('localID'),
-                    content=result.get('content'),
-                    search_score=result.get('@search.score', 0)
+            else:
+                # Multiple candidates or imperfect matches - return as candidates
+                all_candidates = perfect_matches + candidates
+                all_candidates.sort(key=lambda x: x.search_score, reverse=True)
+                
+                return SearchResponse(
+                    perfect_matches=[],
+                    candidates=all_candidates[:20],  # Limit to top 20
+                    query=query,
+                    total_results=len(all_candidates),
+                    search_method="multiple_candidates"
                 )
-                search_results.append(search_result)
-            
-            return search_results
             
         except Exception as e:
-            print(f"Keyword search error: {e}")
-            return []
+            print(f"Hybrid search error: {e}")
+            return SearchResponse([], [], query, 0, "hybrid_search_failed")
 
-    async def filter_search(self, 
-                           filters: Dict[str, str],
-                           top: int = 10) -> List[SearchResult]:
-        """Search with metadata filters only"""
+    def print_search_response(self, response: SearchResponse):
+        """Pretty print search response"""
+        print(f"\n=== SEARCH RESULTS ===")
+        print(f"Search Method: {response.search_method}")
+        print(f"Total Results: {response.total_results}")
+        print(f"Perfect Matches: {len(response.perfect_matches)}")
+        print(f"Candidates: {len(response.candidates)}")
         
-        filter_expressions = []
-        for field, value in filters.items():
-            filter_expressions.append(f"{field} eq '{value}'")
+        if response.perfect_matches:
+            print(f"\n--- PERFECT MATCHES ({len(response.perfect_matches)}) ---")
+            for i, result in enumerate(response.perfect_matches, 1):
+                self._print_result(result, i)
         
-        filter_expression = " and ".join(filter_expressions) if filter_expressions else None
-        
-        try:
-            results = self.search_client.search(
-                search_text="*",
-                filter=filter_expression,
-                top=top,
-                select=[
-                    "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
-                    "legalLastName", "dob", "sexCode", "postalCode", "mincode", 
-                    "grade", "localID", "content"
-                ]
-            )
-            
-            search_results = []
-            for result in results:
-                search_result = SearchResult(
-                    student_id=result.get('student_id', ''),
-                    pen=result.get('pen'),
-                    legal_first_name=result.get('legalFirstName'),
-                    legal_middle_names=result.get('legalMiddleNames'),
-                    legal_last_name=result.get('legalLastName'),
-                    dob=result.get('dob'),
-                    sex_code=result.get('sexCode'),
-                    postal_code=result.get('postalCode'),
-                    mincode=result.get('mincode'),
-                    grade=result.get('grade'),
-                    local_id=result.get('localID'),
-                    content=result.get('content'),
-                    search_score=result.get('@search.score', 0)
-                )
-                search_results.append(search_result)
-            
-            return search_results
-            
-        except Exception as e:
-            print(f"Filter search error: {e}")
-            return []
-
-    async def get_by_id(self, student_id: str) -> Optional[SearchResult]:
-        """Get specific student by ID"""
-        try:
-            result = self.search_client.get_document(student_id)
-            
-            return SearchResult(
-                student_id=result.get('student_id', ''),
-                pen=result.get('pen'),
-                legal_first_name=result.get('legalFirstName'),
-                legal_middle_names=result.get('legalMiddleNames'),
-                legal_last_name=result.get('legalLastName'),
-                dob=result.get('dob'),
-                sex_code=result.get('sexCode'),
-                postal_code=result.get('postalCode'),
-                mincode=result.get('mincode'),
-                grade=result.get('grade'),
-                local_id=result.get('localID'),
-                content=result.get('content'),
-                search_score=1.0
-            )
-            
-        except Exception as e:
-            print(f"Get by ID error: {e}")
-            return None
-
-    def print_results(self, results: List[SearchResult], title: str = "Search Results"):
-        """Pretty print search results"""
-        print(f"\n=== {title} ===")
-        print(f"Found {len(results)} results")
-        
-        for i, result in enumerate(results, 1):
-            print(f"\nResult {i} (Score: {result.search_score:.4f}):")
-            print(f"  Student ID: {result.student_id}")
-            print(f"  PEN: {result.pen}")
-            print(f"  Name: {result.legal_first_name} {result.legal_middle_names or ''} {result.legal_last_name}".strip())
-            print(f"  DOB: {result.dob}")
-            print(f"  Sex: {result.sex_code}")
-            print(f"  Postal: {result.postal_code}")
-            print(f"  Mincode: {result.mincode}")
-            print("  " + "-" * 50)
-
-
-# Test functions
-async def test_searches():
-    """Test different search strategies"""
-    search_service = AzureSearchQuery()
+        if response.candidates:
+            print(f"\n--- CANDIDATES ({len(response.candidates)}) ---")
+            for i, result in enumerate(response.candidates, 1):
+                self._print_result(result, i)
     
-    # Test 1: Hybrid search
-    print("\n🔍 Testing Hybrid Search (ROBYN ANDERSON)")
-    results = await search_service.hybrid_search("ROBYN", "ANDERSON", top=5)
-    search_service.print_results(results, "Hybrid Search - ROBYN ANDERSON")
-    
-    # Test 2: Vector only search
-    print("\n🔍 Testing Vector-Only Search (MICHAEL LEE)")
-    results = await search_service.vector_only_search("MICHAEL", "LEE", top=5)
-    search_service.print_results(results, "Vector Search - MICHAEL LEE")
-    
-    # Test 3: Keyword only search
-    print("\n🔍 Testing Keyword-Only Search")
-    results = await search_service.keyword_only_search("JENNIFER LEE", top=5)
-    search_service.print_results(results, "Keyword Search - JENNIFER LEE")
-    
-    # Test 4: Filter search
-    print("\n🔍 Testing Filter Search (Sex: F)")
-    results = await search_service.filter_search({"sexCode": "F"}, top=5)
-    search_service.print_results(results, "Filter Search - Females")
-    
-    # Test 5: Hybrid with metadata
-    print("\n🔍 Testing Hybrid + Metadata (DAVID LEE + Sex: M)")
-    results = await search_service.hybrid_search("DAVID", "LEE", sex_code="M", top=5)
-    search_service.print_results(results, "Hybrid + Metadata - DAVID LEE (Male)")
+    def _print_result(self, result: SearchResult, index: int):
+        """Print individual result"""
+        print(f"\n{index}. {result.legal_first_name} {result.legal_middle_names or ''} {result.legal_last_name}".strip())
+        print(f"   Student ID: {result.student_id}")
+        print(f"   PEN: {result.pen}")
+        print(f"   DOB: {result.dob}")
+        print(f"   Sex: {result.sex_code}")
+        print(f"   Postal: {result.postal_code}")
+        print(f"   Mincode: {result.mincode}")
+        print(f"   Score: {result.search_score:.4f} ({result.match_type})")
 
-
-if __name__ == "__main__":
-    asyncio.run(test_searches())

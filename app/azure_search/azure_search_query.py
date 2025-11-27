@@ -470,12 +470,12 @@ class AzureSearchQuery:
         print(f"Total Results: {response.total_results}")
         print(f"Perfect Matches: {len(response.perfect_matches)}")
         print(f"Candidates: {len(response.candidates)}")
-        print(f"⏱️  TIMING:")
+        print(f"TIMING:")
         print(f"   Total Time: {response.search_time_ms:.2f}ms")
         print(f"   Embedding: {response.embedding_time_ms:.2f}ms")
         print(f"   Azure Search: {response.azure_search_time_ms:.2f}ms")
         print(f"   Processing: {response.processing_time_ms:.2f}ms")
-        print(f"📁 Debug Log: {self.log_file}")
+        print(f"Debug Log: {self.log_file}")
         
         if response.perfect_matches:
             print(f"\n--- PERFECT MATCHES ({len(response.perfect_matches)}) ---")
@@ -546,8 +546,8 @@ async def run_test_suite():
         ("Direct PEN Lookup", {"pen": "124809765"}),
     ]
     
-    print(f"🔍 Running Azure Search Test Suite")
-    print(f"📁 Debug logs will be saved to: app/log/")
+    print(f"Running Azure Search Test Suite")
+    print(f"Debug logs will be saved to: app/log/")
     
     for test_name, query in test_cases:
         print(f"\n{'='*60}")

@@ -272,7 +272,7 @@ class AzureSearchQuery:
             # 4. Create vector query
             vector_query = VectorizedQuery(
                 vector=name_embedding,
-                k_nearest_neighbors=100,  # Get more for processing
+                k_nearest_neighbors=1000,  # Get more for processing
                 fields="nameEmbedding"
             )
             
@@ -280,7 +280,7 @@ class AzureSearchQuery:
             results = self.search_client.search(
                 search_text=keyword_text,
                 vector_queries=[vector_query],
-                top=100,
+                top=1000,  # Get all candidates first
                 filter=filter_expression,
                 select=[
                     "id", "student_id", "pen", "legalFirstName", "legalMiddleNames", 
@@ -339,35 +339,46 @@ class AzureSearchQuery:
             perfect_matches.sort(key=lambda x: x.search_score, reverse=True)
             candidates.sort(key=lambda x: x.search_score, reverse=True)
             
-            # 8. Apply business rules
+            # 8. Calculate total results
+            total_perfect = len(perfect_matches)
+            total_candidates = len(candidates)
+            total_results = total_perfect + total_candidates
+            
+            # 9. Apply business rules
             if len(perfect_matches) == 1 and len(candidates) == 0:
                 # Single perfect match - return as perfect match
                 return SearchResponse(
                     perfect_matches=perfect_matches,
                     candidates=[],
                     query=query,
-                    total_results=1,
+                    total_results=total_results,
                     search_method="single_perfect_match"
                 )
+            elif len(perfect_matches) > 0:
+                # Multiple perfect matches - return all perfects + top candidates
+                return SearchResponse(
+                    perfect_matches=perfect_matches,
+                    candidates=candidates,  # Keep all candidates for total count
+                    query=query,
+                    total_results=total_results,
+                    search_method="multiple_perfect_matches"
+                )
             else:
-                # Multiple candidates or imperfect matches - return as candidates
-                all_candidates = perfect_matches + candidates
-                all_candidates.sort(key=lambda x: x.search_score, reverse=True)
-                
+                # No perfect matches - return all candidates
                 return SearchResponse(
                     perfect_matches=[],
-                    candidates=all_candidates[:20],  # Limit to top 20
+                    candidates=candidates,  # Keep all candidates for total count
                     query=query,
-                    total_results=len(all_candidates),
-                    search_method="multiple_candidates"
+                    total_results=total_results,
+                    search_method="candidates_only"
                 )
             
         except Exception as e:
             print(f"Hybrid search error: {e}")
             return SearchResponse([], [], query, 0, "hybrid_search_failed")
 
-    def print_search_response(self, response: SearchResponse):
-        """Pretty print search response"""
+    def print_search_response(self, response: SearchResponse, debug_limit: int = 5):
+        """Pretty print search response with debug limit"""
         print(f"\n=== SEARCH RESULTS ===")
         print(f"Search Method: {response.search_method}")
         print(f"Total Results: {response.total_results}")
@@ -376,13 +387,19 @@ class AzureSearchQuery:
         
         if response.perfect_matches:
             print(f"\n--- PERFECT MATCHES ({len(response.perfect_matches)}) ---")
-            for i, result in enumerate(response.perfect_matches, 1):
+            display_perfect = response.perfect_matches[:debug_limit]
+            for i, result in enumerate(display_perfect, 1):
                 self._print_result(result, i)
+            if len(response.perfect_matches) > debug_limit:
+                print(f"... and {len(response.perfect_matches) - debug_limit} more perfect matches")
         
         if response.candidates:
-            print(f"\n--- CANDIDATES ({len(response.candidates)}) ---")
-            for i, result in enumerate(response.candidates, 1):
+            print(f"\n--- CANDIDATES ({len(response.candidates)} total, showing top {debug_limit}) ---")
+            display_candidates = response.candidates[:debug_limit]
+            for i, result in enumerate(display_candidates, 1):
                 self._print_result(result, i)
+            if len(response.candidates) > debug_limit:
+                print(f"... and {len(response.candidates) - debug_limit} more candidates")
     
     def _print_result(self, result: SearchResult, index: int):
         """Print individual result"""
@@ -444,7 +461,7 @@ async def run_test_suite():
         print(f"{'='*60}")
         
         response = await search_service.search_students(query)
-        search_service.print_search_response(response)
+        search_service.print_search_response(response, debug_limit=5)  # Show only top 5 for debug
 
 
 if __name__ == "__main__":

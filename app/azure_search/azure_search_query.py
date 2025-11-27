@@ -1,4 +1,4 @@
-import asyncio
+import asyncio 
 import json
 import time
 import os
@@ -69,10 +69,11 @@ class AzureSearchQuery:
         
         # Field matching thresholds
         self.thresholds = {
-            "name_embedding_min": 0.75,  # Minimum cosine similarity for name candidates
-            "postal_max_diff": 2,        # Max character differences for postal code
-            "mincode_max_diff": 3,       # Max character differences for mincode
-            "name_similarity_min": 0.6   # Min string similarity for name fields
+            # We no longer use @search.score as a hard cutoff
+            "name_embedding_min": 0.0,   # <<< CHANGE (not used for filtering anymore)
+            "postal_max_diff": 2,
+            "mincode_max_diff": 3,
+            "name_similarity_min": 0.6
         }
         
         print("AzureSearchQuery initialized successfully")
@@ -93,8 +94,6 @@ class AzureSearchQuery:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] {message}\n")
-
-
 
     def generate_name_embedding(self, first_name: str, last_name: str, middle_names: str = "") -> Tuple[List[float], float]:
         """Generate embedding for name search"""
@@ -128,8 +127,6 @@ class AzureSearchQuery:
             embedding_time = (time.perf_counter() - start_time) * 1000
             self._log_debug(f"Embedding error after {embedding_time:.2f}ms: {e}")
             raise
-
-
 
     def _calculate_field_similarity(self, query_value: str, candidate_value: str, field_type: str = "exact") -> float:
         """Calculate field similarity with thresholds"""
@@ -200,12 +197,20 @@ class AzureSearchQuery:
         return True
 
     def _is_reasonable_candidate(self, query: Dict[str, Any], candidate: Dict[str, Any], base_score: float) -> bool:
-        """Check if candidate meets threshold criteria"""
-        # Name embedding threshold (base_score represents similarity)
-        if base_score < self.thresholds["name_embedding_min"]:
-            return False
-        
-        # Field-specific thresholds
+        """
+        Check if candidate meets threshold criteria.
+
+        IMPORTANT CHANGE:
+        - We no longer reject candidates purely based on @search.score.
+        - We only drop candidates that clearly violate strong fields like postal/mincode.
+        """
+        # <<< CHANGE: removed name_embedding_min score cutoff
+        self._log_debug(
+            f"Evaluating candidate {candidate.get('legalFirstName')} "
+            f"{candidate.get('legalLastName')} with score={base_score}"
+        )
+
+        # Field-specific thresholds (only if both sides present)
         for field, field_type in [("postalCode", "postal"), ("mincode", "mincode")]:
             query_value = query.get(field)
             candidate_value = candidate.get(field)
@@ -213,10 +218,15 @@ class AzureSearchQuery:
             if (query_value and query_value != 'NULL' and 
                 candidate_value and candidate_value != 'NULL'):
                 similarity = self._calculate_field_similarity(query_value, candidate_value, field_type)
-                if similarity == 0.0:  # Below threshold
+                if similarity == 0.0:  # Below threshold → clearly wrong candidate
+                    self._log_debug(
+                        f"Rejected by {field} similarity. "
+                        f"Query='{query_value}', Candidate='{candidate_value}'"
+                    )
                     return False
         
-        return True
+        # If we reach here, treat as reasonable
+        return True  # <<< CHANGE (always accept if not obviously wrong)
 
     async def search_students(self, query: Dict[str, Any]) -> SearchResponse:
         """Main search function"""
@@ -320,7 +330,10 @@ class AzureSearchQuery:
             candidates = []
             two_field_exact_matches = []
             
+            total_seen = 0  # <<< optional debug counter
+
             for result in results:
+                total_seen += 1
                 candidate_data = {
                     "student_id": result.get('student_id', ''), "pen": result.get('pen'),
                     "legalFirstName": result.get('legalFirstName'), 
@@ -332,6 +345,11 @@ class AzureSearchQuery:
                 }
                 
                 base_score = result.get('@search.score', 0)
+                self._log_debug(
+                    f"Raw result {total_seen}: "
+                    f"{candidate_data['legalFirstName']} {candidate_data['legalLastName']} "
+                    f"score={base_score}"
+                )
                 
                 # Check if reasonable candidate first
                 if not self._is_reasonable_candidate(query, candidate_data, base_score):
@@ -401,6 +419,11 @@ class AzureSearchQuery:
                 if truncated:
                     search_method += "_truncated"
             
+            self._log_debug(
+                f"Total raw results from Azure: {total_seen}, "
+                f"kept={len(final_perfect)+len(final_candidates)}"
+            )
+
             return SearchResponse(
                 perfect_matches=final_perfect, candidates=final_candidates, query=query,
                 total_results=total_before_truncation, search_method=search_method,

@@ -23,31 +23,60 @@ search_client = SearchClient(
 # ---------------------------------------------------------------
 def print_index_schema():
     print("\n=== INDEX SCHEMA ===")
-    index = index_client.get_index(INDEX_NAME)
-    for f in index.fields:
-        print(f"- {f.name:20} | {f.type:25} | searchable={f.searchable} filterable={f.filterable} sortable={f.sortable}")
+    try:
+        index = index_client.get_index(INDEX_NAME)
+        for f in index.fields:
+            print(f"- {f.name:20} | {f.type:25} | searchable={f.searchable} filterable={f.filterable} sortable={f.sortable}")
+    except Exception as e:
+        print(f"Error getting index schema: {e}")
 
 # ---------------------------------------------------------------
 # 2. COUNT TOTAL DOCUMENTS
 # ---------------------------------------------------------------
 def count_documents():
     print("\n=== COUNTING DOCUMENTS ===")
-    count = search_client.get_document_count()
-    print(f"Total documents: {count}")
-    return count
+    try:
+        count = search_client.get_document_count()
+        print(f"Total documents: {count}")
+        return count
+    except Exception as e:
+        print(f"Error counting documents: {e}")
+        return 0
 
 # ---------------------------------------------------------------
-# 3. READ SAMPLE DOCUMENTS (TOP 10)
+# 3. READ SAMPLE DOCUMENTS (TOP 10) - FIXED
 # ---------------------------------------------------------------
 def print_sample_docs():
     print("\n=== SAMPLE DOCUMENTS (TOP 10) ===")
-    results = search_client.search(
-        search="*",
-        top=10
-    )
-    for doc in results:
-        print(doc)
-        print("--------------------------------------------------")
+    try:
+        # Use search_text parameter instead of search
+        results = search_client.search(
+            search_text="*",
+            top=10,
+            include_total_count=True
+        )
+        
+        count = 0
+        for doc in results:
+            count += 1
+            print(f"Document {count}:")
+            # Print key fields only to avoid clutter
+            for key, value in doc.items():
+                if key == 'nameEmbedding':
+                    # Show embedding info without printing the full array
+                    if value:
+                        print(f"  {key}: [embedding with {len(value)} dimensions]")
+                    else:
+                        print(f"  {key}: None")
+                else:
+                    print(f"  {key}: {value}")
+            print("--------------------------------------------------")
+            
+        if count == 0:
+            print("No documents found in the index")
+            
+    except Exception as e:
+        print(f"Error searching documents: {e}")
 
 # ---------------------------------------------------------------
 # 4. FETCH SPECIFIC DOCUMENT BY KEY
@@ -56,7 +85,14 @@ def get_by_id(doc_id):
     print(f"\n=== FETCH DOCUMENT id={doc_id} ===")
     try:
         doc = search_client.get_document(doc_id)
-        print(doc)
+        for key, value in doc.items():
+            if key == 'nameEmbedding':
+                if value:
+                    print(f"  {key}: [embedding with {len(value)} dimensions]")
+                else:
+                    print(f"  {key}: None")
+            else:
+                print(f"  {key}: {value}")
     except Exception as e:
         print("Document not found:", e)
 
@@ -65,28 +101,86 @@ def get_by_id(doc_id):
 # ---------------------------------------------------------------
 def check_vector_length(n=5):
     print("\n=== VECTOR LENGTH CHECK ===")
-    results = search_client.search(search="*", top=n, select=["id", "nameEmbedding"])
-    for r in results:
-        emb = r.get("nameEmbedding", None)
-        if emb:
-            print(f"id={r['id']} | embedding length={len(emb)}")
-        else:
-            print(f"id={r['id']} | NO embedding found")
+    try:
+        results = search_client.search(
+            search_text="*", 
+            top=n, 
+            select=["id", "nameEmbedding"]
+        )
+        
+        count = 0
+        for r in results:
+            count += 1
+            emb = r.get("nameEmbedding", None)
+            if emb:
+                print(f"id={r['id']} | embedding length={len(emb)}")
+            else:
+                print(f"id={r['id']} | NO embedding found")
+                
+        if count == 0:
+            print("No documents found for vector check")
+            
+    except Exception as e:
+        print(f"Error checking vector length: {e}")
 
 # ---------------------------------------------------------------
-# 6. UPDATE DOCUMENT (MERGE / OVERWRITE)
+# 6. SEARCH BY NAME
+# ---------------------------------------------------------------
+def search_by_name(name, top=5):
+    print(f"\n=== SEARCH BY NAME: {name} ===")
+    try:
+        results = search_client.search(
+            search_text=name,
+            top=top,
+            select=["id", "legalFirstName", "legalLastName", "legalMiddleNames", "pen", "dob"]
+        )
+        
+        count = 0
+        for doc in results:
+            count += 1
+            print(f"Result {count}:")
+            for key, value in doc.items():
+                print(f"  {key}: {value}")
+            print("--------------------------------------------------")
+            
+        if count == 0:
+            print(f"No results found for '{name}'")
+            
+    except Exception as e:
+        print(f"Error searching by name: {e}")
+
+# ---------------------------------------------------------------
+# 7. UPDATE DOCUMENT (MERGE / OVERWRITE)
 # ---------------------------------------------------------------
 def update_document(doc):
     print("\n=== UPDATING DOCUMENT ===")
-    # MERGE OR CREATE (upsert)
-    result = search_client.merge_or_upload_documents([doc])
-    print("Update result:", result)
+    try:
+        # MERGE OR CREATE (upsert)
+        result = search_client.merge_or_upload_documents([doc])
+        print("Update result:", result)
+    except Exception as e:
+        print(f"Error updating document: {e}")
+
+# ---------------------------------------------------------------
+# 8. SEARCH SPECIFIC STUDENTS
+# ---------------------------------------------------------------
+def search_robyn_anderson():
+    print("\n=== SEARCHING FOR ROBYN ANDERSON ===")
+    search_by_name("ROBYN ANDERSON")
 
 # ---------------------------------------------------------------
 # RUN EVERYTHING
 # ---------------------------------------------------------------
 if __name__ == "__main__":
-    print_index_schema()
-    count_documents()
-    print_sample_docs()
-    check_vector_length()
+    try:
+        print_index_schema()
+        count_documents()
+        print_sample_docs()
+        check_vector_length()
+        search_robyn_anderson()
+        
+        # Test with a specific document ID if you have one
+        # get_by_id("some-student-id-here")
+        
+    except Exception as e:
+        print(f"General error: {e}")

@@ -1,5 +1,8 @@
 import asyncio
 import json
+import time
+import os
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from azure.identity import DefaultAzureCredential
@@ -35,6 +38,10 @@ class SearchResponse:
     query: Dict[str, Any]
     total_results: int
     search_method: str
+    search_time_ms: float = 0.0
+    embedding_time_ms: float = 0.0
+    azure_search_time_ms: float = 0.0
+    processing_time_ms: float = 0.0
 
 class AzureSearchQuery:
     def __init__(self):
@@ -56,21 +63,53 @@ class AzureSearchQuery:
             azure_endpoint=settings.openai_api_base_embedding_3
         )
         
+        # Setup logging
+        self._setup_logging()
+        
         print("AzureSearchQuery initialized successfully")
 
-    def generate_name_embedding(self, first_name: str, last_name: str, middle_names: str = "") -> List[float]:
+    def _setup_logging(self):
+        """Setup debug logging to file"""
+        # Create log directory if it doesn't exist
+        log_dir = os.path.join(os.path.dirname(__file__), '..', 'log')
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Create log file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = os.path.join(log_dir, f"azure_search_debug_{timestamp}.log")
+        
+        # Initialize log file
+        with open(self.log_file, 'w', encoding='utf-8') as f:
+            f.write(f"Azure Search Debug Log - {datetime.now().isoformat()}\n")
+            f.write("=" * 80 + "\n\n")
+
+    def _log_debug(self, message: str):
+        """Log debug message to file"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(self.log_file, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {message}\n")
+
+    def generate_name_embedding(self, first_name: str, last_name: str, middle_names: str = "") -> Tuple[List[float], float]:
         """Generate embedding for name search using same format as import"""
+        start_time = time.perf_counter()
+        
         name_part = f"{first_name} {last_name}".strip()
         text = f"Name: {name_part}, Middlename: {middle_names}"
+        
+        self._log_debug(f"Generating embedding for: {text}")
         
         try:
             response = self.openai_client.embeddings.create(
                 model="text-embedding-3-large",
                 input=text
             )
-            return response.data[0].embedding
+            embedding_time = (time.perf_counter() - start_time) * 1000
+            self._log_debug(f"Embedding generated in {embedding_time:.2f}ms")
+            
+            return response.data[0].embedding, embedding_time
         except Exception as e:
-            print(f"Embedding generation error: {e}")
+            embedding_time = (time.perf_counter() - start_time) * 1000
+            self._log_debug(f"Embedding generation error after {embedding_time:.2f}ms: {e}")
             raise
 
     def _calculate_field_similarity(self, query_value: str, candidate_value: str, field_type: str = "exact") -> float:
@@ -178,24 +217,47 @@ class AzureSearchQuery:
         """
         Main search function following the specified methodology
         """
+        start_time = time.perf_counter()
+        
+        self._log_debug(f"=== SEARCH STARTED ===")
+        self._log_debug(f"Query: {json.dumps(query, indent=2)}")
         
         # 1. Direct lookup by PEN or Student ID
         if query.get("pen") or query.get("student_id"):
-            return await self._direct_lookup(query)
+            response = await self._direct_lookup(query)
+        else:
+            # 2. Hybrid search with name as dominant key
+            response = await self._hybrid_name_search(query)
         
-        # 2. Hybrid search with name as dominant key
-        return await self._hybrid_name_search(query)
+        total_time = (time.perf_counter() - start_time) * 1000
+        response.search_time_ms = total_time
+        
+        self._log_debug(f"=== SEARCH COMPLETED ===")
+        self._log_debug(f"Total time: {total_time:.2f}ms")
+        self._log_debug(f"Embedding time: {response.embedding_time_ms:.2f}ms")
+        self._log_debug(f"Azure Search time: {response.azure_search_time_ms:.2f}ms")
+        self._log_debug(f"Processing time: {response.processing_time_ms:.2f}ms")
+        self._log_debug(f"Results: {response.total_results} total, {len(response.perfect_matches)} perfect, {len(response.candidates)} candidates")
+        self._log_debug("")
+        
+        return response
 
     async def _direct_lookup(self, query: Dict[str, Any]) -> SearchResponse:
         """Direct lookup by PEN or Student ID"""
+        
+        self._log_debug("Using direct lookup method")
         
         try:
             filter_expr = None
             if query.get("pen"):
                 filter_expr = f"pen eq '{query['pen']}'"
+                self._log_debug(f"Direct PEN lookup: {query['pen']}")
             elif query.get("student_id"):
                 filter_expr = f"student_id eq '{query['student_id']}'"
+                self._log_debug(f"Direct Student ID lookup: {query['student_id']}")
             
+            # Time the Azure Search call
+            azure_start = time.perf_counter()
             results = self.search_client.search(
                 search_text="*",
                 filter=filter_expr,
@@ -206,7 +268,10 @@ class AzureSearchQuery:
                     "grade", "localID"
                 ]
             )
+            azure_time = (time.perf_counter() - azure_start) * 1000
             
+            # Time the processing
+            process_start = time.perf_counter()
             search_results = []
             for result in results:
                 search_result = SearchResult(
@@ -225,17 +290,23 @@ class AzureSearchQuery:
                     match_type="perfect"
                 )
                 search_results.append(search_result)
+            process_time = (time.perf_counter() - process_start) * 1000
+            
+            self._log_debug(f"Direct lookup found {len(search_results)} results")
             
             return SearchResponse(
                 perfect_matches=search_results,
                 candidates=[],
                 query=query,
                 total_results=len(search_results),
-                search_method="direct_lookup"
+                search_method="direct_lookup",
+                embedding_time_ms=0.0,
+                azure_search_time_ms=azure_time,
+                processing_time_ms=process_time
             )
             
         except Exception as e:
-            print(f"Direct lookup error: {e}")
+            self._log_debug(f"Direct lookup error: {e}")
             return SearchResponse([], [], query, 0, "direct_lookup_failed")
 
     async def _hybrid_name_search(self, query: Dict[str, Any]) -> SearchResponse:
@@ -243,11 +314,14 @@ class AzureSearchQuery:
         
         # Validate required fields
         if not query.get("legalFirstName") or not query.get("legalLastName"):
+            self._log_debug("Missing required fields for hybrid search")
             return SearchResponse([], [], query, 0, "missing_required_fields")
+        
+        self._log_debug("Using hybrid name search method")
         
         try:
             # 1. Generate embedding for vector search
-            name_embedding = self.generate_name_embedding(
+            name_embedding, embedding_time = self.generate_name_embedding(
                 query["legalFirstName"], 
                 query["legalLastName"], 
                 query.get("legalMiddleNames", "")
@@ -255,6 +329,7 @@ class AzureSearchQuery:
             
             # 2. Build keyword search text
             keyword_text = f"{query['legalFirstName']} {query.get('legalMiddleNames', '')} {query['legalLastName']}".strip()
+            self._log_debug(f"Keyword search text: {keyword_text}")
             
             # 3. Build hard filters for high priority fields
             filters = []
@@ -262,12 +337,15 @@ class AzureSearchQuery:
             # DOB as second key - exact match if provided
             if query.get("dob"):
                 filters.append(f"dob eq '{query['dob']}'")
+                self._log_debug(f"Adding DOB filter: {query['dob']}")
             
             # Sex filter if provided
             if query.get("sexCode"):
                 filters.append(f"sexCode eq '{query['sexCode']}'")
+                self._log_debug(f"Adding sex filter: {query['sexCode']}")
             
             filter_expression = " and ".join(filters) if filters else None
+            self._log_debug(f"Filter expression: {filter_expression}")
             
             # 4. Create vector query
             vector_query = VectorizedQuery(
@@ -277,6 +355,7 @@ class AzureSearchQuery:
             )
             
             # 5. Execute hybrid search
+            azure_start = time.perf_counter()
             results = self.search_client.search(
                 search_text=keyword_text,
                 vector_queries=[vector_query],
@@ -289,12 +368,17 @@ class AzureSearchQuery:
                 ],
                 scoring_profile="identity-ranking" if filter_expression is None else None
             )
+            azure_time = (time.perf_counter() - azure_start) * 1000
+            self._log_debug(f"Azure Search completed in {azure_time:.2f}ms")
             
             # 6. Process results and categorize
+            process_start = time.perf_counter()
             perfect_matches = []
             candidates = []
             
+            result_count = 0
             for result in results:
+                result_count += 1
                 candidate_data = {
                     "student_id": result.get('student_id', ''),
                     "pen": result.get('pen'),
@@ -335,46 +419,48 @@ class AzureSearchQuery:
                     search_result.match_type = "candidate"
                     candidates.append(search_result)
             
+            self._log_debug(f"Processed {result_count} results from Azure Search")
+            
             # 7. Sort by score
             perfect_matches.sort(key=lambda x: x.search_score, reverse=True)
             candidates.sort(key=lambda x: x.search_score, reverse=True)
+            
+            process_time = (time.perf_counter() - process_start) * 1000
+            self._log_debug(f"Result processing completed in {process_time:.2f}ms")
             
             # 8. Calculate total results
             total_perfect = len(perfect_matches)
             total_candidates = len(candidates)
             total_results = total_perfect + total_candidates
             
+            self._log_debug(f"Found {total_perfect} perfect matches, {total_candidates} candidates")
+            
             # 9. Apply business rules
             if len(perfect_matches) == 1 and len(candidates) == 0:
                 # Single perfect match - return as perfect match
-                return SearchResponse(
-                    perfect_matches=perfect_matches,
-                    candidates=[],
-                    query=query,
-                    total_results=total_results,
-                    search_method="single_perfect_match"
-                )
+                search_method = "single_perfect_match"
             elif len(perfect_matches) > 0:
                 # Multiple perfect matches - return all perfects + top candidates
-                return SearchResponse(
-                    perfect_matches=perfect_matches,
-                    candidates=candidates,  # Keep all candidates for total count
-                    query=query,
-                    total_results=total_results,
-                    search_method="multiple_perfect_matches"
-                )
+                search_method = "multiple_perfect_matches"
             else:
                 # No perfect matches - return all candidates
-                return SearchResponse(
-                    perfect_matches=[],
-                    candidates=candidates,  # Keep all candidates for total count
-                    query=query,
-                    total_results=total_results,
-                    search_method="candidates_only"
-                )
+                search_method = "candidates_only"
+            
+            self._log_debug(f"Applied business rule: {search_method}")
+            
+            return SearchResponse(
+                perfect_matches=perfect_matches,
+                candidates=candidates,
+                query=query,
+                total_results=total_results,
+                search_method=search_method,
+                embedding_time_ms=embedding_time,
+                azure_search_time_ms=azure_time,
+                processing_time_ms=process_time
+            )
             
         except Exception as e:
-            print(f"Hybrid search error: {e}")
+            self._log_debug(f"Hybrid search error: {e}")
             return SearchResponse([], [], query, 0, "hybrid_search_failed")
 
     def print_search_response(self, response: SearchResponse, debug_limit: int = 5):
@@ -384,6 +470,12 @@ class AzureSearchQuery:
         print(f"Total Results: {response.total_results}")
         print(f"Perfect Matches: {len(response.perfect_matches)}")
         print(f"Candidates: {len(response.candidates)}")
+        print(f"⏱️  TIMING:")
+        print(f"   Total Time: {response.search_time_ms:.2f}ms")
+        print(f"   Embedding: {response.embedding_time_ms:.2f}ms")
+        print(f"   Azure Search: {response.azure_search_time_ms:.2f}ms")
+        print(f"   Processing: {response.processing_time_ms:.2f}ms")
+        print(f"📁 Debug Log: {self.log_file}")
         
         if response.perfect_matches:
             print(f"\n--- PERFECT MATCHES ({len(response.perfect_matches)}) ---")
@@ -453,6 +545,9 @@ async def run_test_suite():
         # Direct lookup
         ("Direct PEN Lookup", {"pen": "124809765"}),
     ]
+    
+    print(f"🔍 Running Azure Search Test Suite")
+    print(f"📁 Debug logs will be saved to: app/log/")
     
     for test_name, query in test_cases:
         print(f"\n{'='*60}")

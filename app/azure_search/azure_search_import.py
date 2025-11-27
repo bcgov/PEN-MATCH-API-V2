@@ -92,8 +92,8 @@ class AzureSearchImportService:
         content = ' '.join(content_parts)
         
         return {
-            'id': student['student_id'],
-            'student_id': student['student_id'],
+            'id': str(student['student_id']),
+            'student_id': str(student['student_id']),
             'pen': student.get('pen') if student.get('pen') != 'NULL' else None,
             'legalFirstName': student.get('legalFirstName') if student.get('legalFirstName') != 'NULL' else None,
             'legalMiddleNames': student.get('legalMiddleNames') if student.get('legalMiddleNames') != 'NULL' else None,
@@ -114,7 +114,7 @@ class AzureSearchImportService:
             query = '''
                 UPDATE "api_pen_match_v2".student 
                 SET embedding = $1::float[]
-                WHERE student_id = $2
+                WHERE student_id = $2::uuid
             '''
             await conn.execute(query, embedding, student_id)
     
@@ -123,6 +123,9 @@ class AzureSearchImportService:
         results = []
         for student in students:
             try:
+                # Ensure student_id is string
+                student['student_id'] = str(student['student_id'])
+                
                 embedding = self.generate_embedding(student)
                 document = self._prepare_search_document(student, embedding)
                 
@@ -137,7 +140,7 @@ class AzureSearchImportService:
                 print(f"Error processing student {student.get('student_id')}: {e}")
                 results.append({
                     'document': None,
-                    'student_id': student['student_id'],
+                    'student_id': str(student['student_id']),
                     'embedding': None,
                     'success': False,
                     'error': str(e)
@@ -190,7 +193,8 @@ class AzureSearchImportService:
             uploaded = 0
             for student in students:
                 try:
-                    student_id = student.get("student_id")
+                    student_id = str(student.get("student_id"))
+                    student["student_id"] = student_id
                     print(f"Processing student: {student_id}")
                     
                     embedding = self.generate_embedding(student)
@@ -265,7 +269,7 @@ class AzureSearchImportService:
                 
                 async with self.db.connection_pool.acquire() as conn:
                     query = """
-                        SELECT student_id, 
+                        SELECT student_id::text as student_id, 
                                COALESCE(pen, 'NULL') as pen, 
                                COALESCE(legal_first_name, 'NULL') as legal_first_name,
                                COALESCE(legal_last_name, 'NULL') as legal_last_name, 
@@ -292,7 +296,7 @@ class AzureSearchImportService:
                     
                     for j, row in enumerate(rows, 1):
                         try:
-                            student_id = row["student_id"]
+                            student_id = str(row["student_id"])
                             print(f"  Processing record {j}/{len(rows)} - Student ID: {student_id}")
                             
                             # Create student object with correct field mapping

@@ -78,20 +78,46 @@ class AzureSearchImportService:
         except Exception as e:
             print(f"Embedding error for student {student.get('student_id')}: {e}")
             raise
-    
+
+            
     def _prepare_search_document(self, student: Dict[str, Any], embedding: List[float]) -> Dict[str, Any]:
         """Prepare student data for Azure Search index"""
+        # Build comprehensive content field
         content_parts = []
-        if student.get('legalFirstName') and student.get('legalFirstName') != 'NULL':
-            content_parts.append(student['legalFirstName'])
-        if student.get('legalMiddleNames') and student.get('legalMiddleNames') != 'NULL':
-            content_parts.append(student['legalMiddleNames'])
-        if student.get('legalLastName') and student.get('legalLastName') != 'NULL':
-            content_parts.append(student['legalLastName'])
-        if student.get('pen') and student.get('pen') != 'NULL':
-            content_parts.append(student['pen'])
         
-        content = ' '.join(content_parts)
+        # Name
+        name_parts = []
+        if student.get('legalFirstName') and student.get('legalFirstName') != 'NULL':
+            name_parts.append(student['legalFirstName'])
+        if student.get('legalMiddleNames') and student.get('legalMiddleNames') != 'NULL':
+            name_parts.append(student['legalMiddleNames'])
+        if student.get('legalLastName') and student.get('legalLastName') != 'NULL':
+            name_parts.append(student['legalLastName'])
+        
+        if name_parts:
+            content_parts.append(f"Name: {' '.join(name_parts)}.")
+        
+        # Date of birth
+        if student.get('dob') and student.get('dob') != 'NULL':
+            content_parts.append(f"Date of birth: {student['dob']}.")
+        
+        # Postal code
+        if student.get('postalCode') and student.get('postalCode') != 'NULL':
+            content_parts.append(f"Postal code: {student['postalCode']}.")
+        
+        # School code (mincode)
+        if student.get('mincode') and student.get('mincode') != 'NULL':
+            content_parts.append(f"School code (mincode): {student['mincode']}.")
+        
+        # PEN
+        if student.get('pen') and student.get('pen') != 'NULL':
+            content_parts.append(f"PEN: {student['pen']}.")
+        
+        # Sex
+        if student.get('sexCode') and student.get('sexCode') != 'NULL':
+            content_parts.append(f"Sex: {student['sexCode']}.")
+        
+        content = '\n'.join(content_parts)
         
         return {
             'id': str(student['student_id']),
@@ -109,6 +135,7 @@ class AzureSearchImportService:
             'grade': student.get('grade') if student.get('grade') != 'NULL' else None,
             'localID': student.get('localID') if student.get('localID') != 'NULL' else None
         }
+
     
     async def _save_embedding_to_db(self, student_id: str, embedding: List[float]):
         """Save embedding to PostgreSQL - disabled until embedding column exists"""

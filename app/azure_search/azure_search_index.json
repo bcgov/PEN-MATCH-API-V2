@@ -17,6 +17,7 @@
       "searchable": true,
       "filterable": false,
       "sortable": false,
+      "retrievable": true,
       "dimensions": 3072,
       "vectorSearchProfile": "vector-profile"
     },

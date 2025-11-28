@@ -47,6 +47,9 @@ class AzureSearchImportService:
         # embedding dimension for text-embedding-ada-002
         self.embedding_dim = 1536
 
+        # max docs per Azure Search index call (service limit)
+        self.max_search_chunk_size = 1000
+
     # ------------------------------------------------------------------
     # Helpers to build embedding inputs
     # ------------------------------------------------------------------
@@ -165,34 +168,59 @@ class AzureSearchImportService:
         }
 
     # ------------------------------------------------------------------
-    # Azure Search upload
+    # Azure Search upload (chunked)
     # ------------------------------------------------------------------
-    async def _batch_upload(self, documents: List[Dict[str, Any]]) -> int:
-        """Upload batch of documents to Azure Search."""
+    async def _batch_upload(
+        self,
+        documents: List[Dict[str, Any]],
+        max_chunk_size: int = None,
+    ) -> int:
+        """
+        Upload documents to Azure Search in safe chunks.
+
+        - Azure AI Search supports up to ~1000 docs or 16 MB per request.
+        - We split the input list into chunks to avoid 413 errors and SDK bugs.
+        """
         if not documents:
             return 0
 
-        try:
-            upload_result = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: self.search_client.upload_documents(documents)
-            )
+        if max_chunk_size is None:
+            max_chunk_size = self.max_search_chunk_size
 
-            uploaded_count = 0
-            for result in upload_result:
-                if result.succeeded:
-                    uploaded_count += 1
+        total_uploaded = 0
+        loop = asyncio.get_event_loop()
 
-            return uploaded_count
+        for start in range(0, len(documents), max_chunk_size):
+            chunk = documents[start : start + max_chunk_size]
+            try:
+                upload_result = await loop.run_in_executor(
+                    None,
+                    lambda c=chunk: self.search_client.upload_documents(documents=c),
+                )
 
-        except Exception as e:
-            print(f"[ERROR] Azure Search batch upload failed: {e}")
-            return 0
+                for result in upload_result:
+                    if result.succeeded:
+                        total_uploaded += 1
+
+            except HttpResponseError as e:
+                print(
+                    f"[ERROR] Azure Search upload failed for chunk of {len(chunk)} docs: {e}"
+                )
+            except Exception as e:
+                print(
+                    f"[ERROR] Unexpected Azure Search upload error for chunk of {len(chunk)} docs: {e}"
+                )
+
+        return total_uploaded
 
     # ------------------------------------------------------------------
     # Single batch by offset (mostly for testing)
     # ------------------------------------------------------------------
     async def import_one_batch(self, offset: int = 0, batch_size: int = 100) -> int:
         """Import single batch using LIMIT/OFFSET (for testing/sampling)."""
+        # Clamp batch_size so we don't create giant uploads
+        batch_size = min(batch_size, self.max_search_chunk_size)
+
         start_time = time.time()
 
         await self.db.create_pool()
@@ -216,6 +244,7 @@ class AzureSearchImportService:
                 """
                 rows = await conn.fetch(query, batch_size, offset)
                 if not rows:
+                    print("No rows returned for this batch.")
                     return 0
 
             students: List[Dict[str, Any]] = [self._row_to_student(row) for row in rows]
@@ -243,6 +272,9 @@ class AzureSearchImportService:
     # ------------------------------------------------------------------
     async def import_all_students(self, batch_size: int = 1000) -> int:
         """Import all students in batches using keyset pagination on student_id."""
+        # Clamp batch_size so we don't overshoot Azure Search limits
+        batch_size = min(batch_size, self.max_search_chunk_size)
+
         start_time = time.time()
         self.stats = AzureSearchProcessingStats(start_time=start_time)
 
@@ -321,7 +353,10 @@ class AzureSearchImportService:
                 self.stats.batches_completed += 1
 
                 # Light progress logging
-                if self.stats.total_processed % 10000 == 0 or self.stats.total_processed == total_count:
+                if (
+                    self.stats.total_processed % 10000 == 0
+                    or self.stats.total_processed == total_count
+                ):
                     elapsed = time.time() - start_time
                     rate = self.stats.total_processed / max(elapsed, 1)
                     print(

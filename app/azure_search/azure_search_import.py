@@ -43,7 +43,7 @@ class AzureSearchImportService:
         self.stats = AzureSearchProcessingStats()
         
         print("Initializing AzureSearchImportService...")
-        print(f"Embedding endpoint: {settings.openai_api_base_embedding}")
+        print(f"Embedding endpoint: {settings.openai_api_base_embedding_3}")
         print("AzureSearchImportService initialized successfully")
     
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
@@ -77,8 +77,7 @@ class AzureSearchImportService:
         try:
             response = self.openai_client.embeddings.create(
                 model="text-embedding-ada-002",
-                input=text,
-                dimensions=1536
+                input=text
             )
             embedding = response.data[0].embedding
             return embedding

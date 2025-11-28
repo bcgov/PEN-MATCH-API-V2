@@ -185,14 +185,16 @@ class StudentSearchService:
             return {"results": [], "count": 0}
 
     # ------------------------------------------------------------------
-    # Soft fuzzy search: vector-only on nameEmbedding (HNSW), top 20
+    # Soft fuzzy search: vector-only on nameEmbedding (HNSW)
+    # Vector search keeps top 100 → soft scoring keeps top 20
     # ------------------------------------------------------------------
     def _soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Fuzzy search with:
-        - vector-only search on nameEmbedding (HNSW, top 20)
+        - vector-only search on nameEmbedding (HNSW, keep top 100)
         - NO text search on content or name fields
         - metadata-based soft scoring (DOB, mincode, postal, sex)
+        - after scoring, keep final top 20
 
         This runs ONLY if hard filter returned 0 results.
         """
@@ -208,13 +210,13 @@ class StudentSearchService:
                 },
             }
 
-        # 2. Build vector query (HNSW, approximate, top 20)
+        # 2. Build vector query (HNSW, approximate, top 100)
         vector_queries: List[VectorizedQuery] = [
             VectorizedQuery(
                 vector=query_embedding,
-                k_nearest_neighbors=20,   # only top 20 neighbors from vector index
+                k_nearest_neighbors=100,   # 🔹 return top 100 neighbors from vector index
                 fields="nameEmbedding",
-                exhaustive=False          # use HNSW approximate search
+                exhaustive=False           # use HNSW approximate search
             )
         ]
 
@@ -223,10 +225,10 @@ class StudentSearchService:
             t0 = time.perf_counter()
             search_method = "vector_only"
             results = self.search_client.search(
-                search_text="*",              # required param, but not used for ranking
+                search_text="*",               # required param, but not used for ranking
                 vector_queries=vector_queries,
-                top=20,                       # we only need 20 docs back
-                include_total_count=False,    # faster, no total count
+                top=100,                       # 🔹 we pull top 100 docs back
+                include_total_count=False,     # faster, no total count
             )
             candidates_list = list(results)
             t1 = time.perf_counter()
@@ -338,10 +340,10 @@ class StudentSearchService:
                 print()
 
             methodology = {
-                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 20)",
+                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 100)",
                 "step2": "Sex filter only (if provided)",
                 "step3": "Soft scoring on DOB, mincode, postal, sex with dynamic weights",
-                "step4": "Final ranking by 0.3 * base_score + soft_score",
+                "step4": "Final ranking by 0.3 * base_score + soft_score (keep top 20)",
                 "search_method": search_method,
                 "embedding_generated": query_embedding is not None,
                 "candidates_initial": len(candidates_list),
@@ -518,7 +520,7 @@ def run_test_suite():
         print_search_results(result, max_display=5)
 
     # FUZZY MATCH TESTS
-    print("\n\nFUZZY MATCH TESTS (VECTOR-ONLY HNSW, TOP 20)")
+    print("\n\nFUZZY MATCH TESTS (VECTOR-ONLY HNSW, TOP 100 → TOP 20)")
     print("=" * 40)
 
     fuzzy_test_cases = [
@@ -575,6 +577,7 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
+        # Uncomment if you want to see detailed fuzzy output
         # print_search_results(result, max_display=5)
 
 

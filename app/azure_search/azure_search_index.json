@@ -22,23 +22,28 @@
       "vectorSearchProfile": "vector-profile"
     },
 
-    { "name": "dob", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
-    { "name": "sexCode", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
-    { "name": "postalCode", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
-    { "name": "mincode", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
-    { "name": "grade", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
-    { "name": "localID", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false }
+    { "name": "dob", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "sexCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "postalCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "mincode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "gradeCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "localID", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false }
   ],
 
   "scoringProfiles": [
     {
-      "name": "identity-ranking",
-      "textWeights": {
+      "name": "identityScoring",
+      "text": {
         "weights": {
-          "legalFirstName": 3,
-          "legalLastName": 3,
-          "legalMiddleNames": 2,
-          "content": 1
+          "legalFirstName": 10,
+          "legalLastName": 10,
+          "legalMiddleNames": 10,
+          "dob": 8,
+          "postalCode": 5,
+          "mincode": 4,
+          "sexCode": 3,
+          "gradeCode": 1,
+          "localID": 1
         }
       }
     }

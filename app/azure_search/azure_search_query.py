@@ -20,7 +20,7 @@ class StudentSearchService:
         self.openai_client = AzureOpenAI(
             api_key=settings.openai_api_key,
             api_version="2023-05-15",
-            azure_endpoint=settings.openai_api_base_embedding,
+            azure_endpoint=settings.openai_api_base_embedding
         )
 
         try:

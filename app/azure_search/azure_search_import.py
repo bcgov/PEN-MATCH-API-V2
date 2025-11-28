@@ -151,8 +151,10 @@ class AzureSearchImportService:
                     return 0
                 
                 documents = []
-                for row in rows:
+                for i, row in enumerate(rows, 1):
                     try:
+                        print(f"{i}/{len(rows)}")
+                        
                         student = {
                             "student_id": str(row["student_id"]),
                             "pen": row["pen"],
@@ -221,8 +223,12 @@ class AzureSearchImportService:
                         break
                     
                     documents = []
-                    for row in rows:
+                    for i, row in enumerate(rows, 1):
                         try:
+                            # Show progress for this batch
+                            current_overall = self.stats.total_processed + i
+                            print(f"{current_overall}/{total_count}")
+                            
                             student = {
                                 "student_id": str(row["student_id"]),
                                 "pen": row["pen"],
@@ -248,12 +254,6 @@ class AzureSearchImportService:
                     self.stats.total_processed += uploaded
                     self.stats.total_failed += len(rows) - uploaded
                     self.stats.batches_completed += 1
-                    
-                    # Progress update every 10 batches
-                    if self.stats.batches_completed % 10 == 0:
-                        elapsed = time.time() - start_time
-                        rate = self.stats.total_processed / elapsed
-                        print(f"Progress: {self.stats.total_processed:,} processed ({rate:.0f}/sec)")
             
             total_time = time.time() - start_time
             print(f"Import completed: {self.stats.total_processed:,} students in {total_time:.1f}s ({self.stats.total_processed/total_time:.0f}/sec)")
@@ -296,8 +296,10 @@ class AzureSearchImportService:
                         continue
                     
                     documents = []
-                    for row in rows:
+                    for j, row in enumerate(rows, 1):
                         try:
+                            print(f"{j}/{len(rows)} ({first_name} {last_name})")
+                            
                             student = {
                                 "student_id": str(row["student_id"]),
                                 "pen": row["pen"],

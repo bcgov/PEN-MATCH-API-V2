@@ -185,90 +185,49 @@ class StudentSearchService:
             return {"results": [], "count": 0}
 
     # ------------------------------------------------------------------
-    # Soft fuzzy search (no early pruning on score, only sex filter)
+    # Soft fuzzy search: vector-only on nameEmbedding (HNSW), top 20
     # ------------------------------------------------------------------
     def _soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Fuzzy search with vector embedding + text + soft scoring.
+        Fuzzy search with:
+        - vector-only search on nameEmbedding (HNSW, top 20)
+        - NO text search on content or name fields
+        - metadata-based soft scoring (DOB, mincode, postal, sex)
+
         This runs ONLY if hard filter returned 0 results.
-        Embedding is only generated here, not in exact path.
-        Uses HNSW (approximate) vector search defined in the index.
         """
-        # 1. Build embedding and text query
+        # 1. Build embedding from name (only entry for fuzzy)
         query_embedding = self.generate_embedding(query_data)
 
-        name_pieces = []
-        if query_data.get("legalFirstName"):
-            name_pieces.append(query_data["legalFirstName"])
-        if query_data.get("legalLastName"):
-            name_pieces.append(query_data["legalLastName"])
-        if query_data.get("legalMiddleNames"):
-            name_pieces.append(query_data["legalMiddleNames"])
-
-        search_text = " ".join(name_pieces).strip() or query_data.get("content", "")
-
-        if not search_text and not query_embedding:
+        if not query_embedding:
             return {
                 "results": [],
                 "count": 0,
                 "methodology": {
-                    "reason": "No search text or embedding available",
+                    "reason": "No name embedding available for fuzzy search",
                 },
             }
 
-        # 2. Build vector query if embedding exists
-        vector_queries: List[VectorizedQuery] = []
-        if query_embedding:
-            vector_queries.append(
-                VectorizedQuery(
-                    vector=query_embedding,
-                    k_nearest_neighbors=100,   # 🔹 only ask for top 100 neighbors
-                    fields="nameEmbedding",
-                    exhaustive=False          # 🔹 use HNSW approximate search
-                )
+        # 2. Build vector query (HNSW, approximate, top 20)
+        vector_queries: List[VectorizedQuery] = [
+            VectorizedQuery(
+                vector=query_embedding,
+                k_nearest_neighbors=20,   # only top 20 neighbors from vector index
+                fields="nameEmbedding",
+                exhaustive=False          # use HNSW approximate search
             )
+        ]
 
         try:
-            # 3. Perform Azure search: hybrid > vector-only > text-only
+            # 3. Vector-only search (no text search_text, no search_fields)
             t0 = time.perf_counter()
-            if vector_queries and search_text:
-                search_method = "hybrid_vector_text"
-                results = self.search_client.search(
-                    search_text=search_text,
-                    vector_queries=vector_queries,
-                    search_fields=[
-                        "content",
-                        "legalFirstName",
-                        "legalLastName",
-                        "legalMiddleNames",
-                    ],
-                    scoring_profile="identityScoring",
-                    top=100,                    # 🔹 only need top 100
-                    include_total_count=False,   # 🔹 faster, no count
-                )
-            elif vector_queries:
-                search_method = "vector_only"
-                results = self.search_client.search(
-                    search_text="*",
-                    vector_queries=vector_queries,
-                    top=100,
-                    include_total_count=False,
-                )
-            else:
-                search_method = "text_only"
-                results = self.search_client.search(
-                    search_text=search_text,
-                    search_fields=[
-                        "content",
-                        "legalFirstName",
-                        "legalLastName",
-                        "legalMiddleNames",
-                    ],
-                    scoring_profile="identityScoring",
-                    top=100,
-                    include_total_count=False,
-                )
-
+            search_method = "vector_only"
+            results = self.search_client.search(
+                search_text="*",              # required param, but not used for ranking
+                vector_queries=vector_queries,
+                top=20,                       # we only need 20 docs back
+                include_total_count=False,    # faster, no total count
+            )
             candidates_list = list(results)
             t1 = time.perf_counter()
             print(
@@ -282,6 +241,7 @@ class StudentSearchService:
 
             for cand in candidates_list:
                 cand_sex = (cand.get("sexCode") or "").upper()
+                # if user provided sex, candidate must match
                 if query_sex and cand_sex and cand_sex != query_sex:
                     continue
                 filtered_candidates.append(cand)
@@ -308,6 +268,7 @@ class StudentSearchService:
                     cand.get("sexCode", ""),
                 )
 
+                # Default weights (importance order)
                 field_weights = {
                     "dob": 0.4,
                     "mincode": 0.3,
@@ -315,6 +276,7 @@ class StudentSearchService:
                     "sex": 0.1,
                 }
 
+                # Only use weights for fields actually provided in query
                 active_weights = {}
                 if query_data.get("dob"):
                     active_weights["dob"] = field_weights["dob"]
@@ -337,6 +299,7 @@ class StudentSearchService:
                     if "sex" in active_weights:
                         soft_score += sex_sim * (active_weights["sex"] / total_weight)
 
+                # If no extra fields provided, we rely purely on base score
                 if total_weight == 0:
                     final_score = base_score
                 else:
@@ -349,9 +312,11 @@ class StudentSearchService:
 
                 scored_candidates.append(cand)
 
+            # 6. Sort by final score and keep top 20
             scored_candidates.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
-            top_candidates = scored_candidates[:100]   # 🔹 still cap to 100
+            top_candidates = scored_candidates[:20]
 
+            # Debug print top 5
             print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
             for i, cand in enumerate(top_candidates[:5], 1):
                 middle = cand.get("legalMiddleNames") or ""
@@ -373,7 +338,7 @@ class StudentSearchService:
                 print()
 
             methodology = {
-                "step1": f"Azure Search with {search_method} (HNSW vector + name fields)",
+                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 20)",
                 "step2": "Sex filter only (if provided)",
                 "step3": "Soft scoring on DOB, mincode, postal, sex with dynamic weights",
                 "step4": "Final ranking by 0.3 * base_score + soft_score",
@@ -406,7 +371,7 @@ class StudentSearchService:
         Main search pipeline:
         1. Hard filter (exact). If 1–100 hits → return (NO embedding).
            If >100 → error.
-        2. If 0 → soft fuzzy search with vector + soft score (embedding used).
+        2. If 0 → soft fuzzy search with vector-only HNSW + soft score.
         """
         # STEP 1: hard filter (no embedding here)
         hard = self._hard_filter_search(query_data)
@@ -543,11 +508,10 @@ def run_test_suite():
         print(f"\nTest {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        # Uncomment to inspect results:
         # print_search_results(result, max_display=5)
 
     # FUZZY MATCH TESTS
-    print("\n\nFUZZY MATCH TESTS (WITH VECTOR EMBEDDING)")
+    print("\n\nFUZZY MATCH TESTS (VECTOR-ONLY HNSW, TOP 20)")
     print("=" * 40)
 
     fuzzy_test_cases = [
@@ -604,7 +568,6 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        # Uncomment to inspect results:
         # print_search_results(result, max_display=5)
 
 

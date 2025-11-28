@@ -3,6 +3,7 @@ from azure.search.documents.models import VectorizedQuery
 from azure.identity import DefaultAzureCredential
 from openai import AzureOpenAI
 import difflib
+import time
 from typing import Dict, List, Any, Optional
 
 from config.settings import settings
@@ -35,7 +36,7 @@ class StudentSearchService:
             raise
 
     # ------------------------------------------------------------------
-    # Embedding generation
+    # Embedding generation (USED ONLY IN FUZZY PATH)
     # ------------------------------------------------------------------
     def generate_embedding(self, query_data: Dict[str, Any]) -> Optional[List[float]]:
         """Generate embedding from full name using text-embedding-3-large."""
@@ -60,11 +61,14 @@ class StudentSearchService:
 
         try:
             print(f"Generating embedding for: {text}")
+            t0 = time.perf_counter()
             resp = self.openai_client.embeddings.create(
                 model="text-embedding-3-large",
                 input=text,
                 dimensions=3072,
             )
+            t1 = time.perf_counter()
+            print(f"Embedding generation took {t1 - t0:.3f} seconds")
             return resp.data[0].embedding
         except Exception as e:
             print(f"Error generating embedding for '{text}': {e}")
@@ -122,6 +126,7 @@ class StudentSearchService:
         Perform strict hard filtering.
         If user gives multiple fields, we do AND between them.
         This is where 'exact match' lives. If this returns >0, we never go to fuzzy.
+        (NO embedding is used in this path.)
         """
         filters = []
 
@@ -155,6 +160,7 @@ class StudentSearchService:
         filter_expression = " and ".join(filters) if filters else None
 
         try:
+            t0 = time.perf_counter()
             results = self.search_client.search(
                 search_text="*",
                 filter=filter_expression,
@@ -162,7 +168,13 @@ class StudentSearchService:
                 include_total_count=True,
             )
             results_list = list(results)
+            t1 = time.perf_counter()
+
             count = len(results_list)
+            print(
+                f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                f"returned {count} rows"
+            )
 
             return {
                 "results": results_list[:100],
@@ -179,6 +191,7 @@ class StudentSearchService:
         """
         Fuzzy search with vector embedding + text + soft scoring.
         This runs ONLY if hard filter returned 0 results.
+        Embedding is only generated here, not in exact path.
         """
         # 1. Build embedding and text query
         query_embedding = self.generate_embedding(query_data)
@@ -215,6 +228,7 @@ class StudentSearchService:
 
         # 3. Perform Azure search: hybrid > vector-only > text-only
         try:
+            t0 = time.perf_counter()
             if vector_queries and search_text:
                 search_method = "hybrid_vector_text"
                 results = self.search_client.search(
@@ -244,8 +258,10 @@ class StudentSearchService:
                 )
 
             candidates_list = list(results)
+            t1 = time.perf_counter()
             print(
-                f"Azure Search returned {len(candidates_list)} initial candidates using {search_method}"
+                f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds, "
+                f"returned {len(candidates_list)} rows"
             )
 
             # 4. Soft filtering: ONLY by sex (if provided)
@@ -340,7 +356,10 @@ class StudentSearchService:
                 print(
                     f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
                 )
-                print(f"   Grade: {cand.get('grade', '')}, Local ID: {cand.get('localId', '')}")
+                # Fix: use correct field names for grade/localID
+                print(
+                    f"   Grade: {cand.get('gradeCode', '')}, Local ID: {cand.get('localID', '')}"
+                )
                 print(
                     f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
                     f"Soft Score: {cand.get('soft_score', 0):.4f}, "
@@ -380,11 +399,11 @@ class StudentSearchService:
     def search_students(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main search pipeline:
-        1. Hard filter (exact). If 1–100 hits → return.
+        1. Hard filter (exact). If 1–100 hits → return (NO embedding).
            If >100 → error.
-        2. If 0 → soft fuzzy search with vector + soft score.
+        2. If 0 → soft fuzzy search with vector + soft score (embedding used).
         """
-        # STEP 1: hard filter
+        # STEP 1: hard filter (no embedding here)
         hard = self._hard_filter_search(query_data)
 
         if hard["count"] > 100:
@@ -519,6 +538,7 @@ def run_test_suite():
         print(f"\nTest {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
+        # Uncomment to inspect results:
         # print_search_results(result, max_display=5)
 
     # FUZZY MATCH TESTS
@@ -579,6 +599,7 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
+        # Uncomment to inspect results:
         # print_search_results(result, max_display=5)
 
 

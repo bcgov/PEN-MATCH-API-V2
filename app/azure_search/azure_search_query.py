@@ -64,7 +64,7 @@ class StudentSearchService:
             resp = self.openai_client.embeddings.create(
                 model="text-embedding-ada-002",
                 input=text,
-                dimensions=1536,
+                dimensions=1536
             )
             t1 = time.perf_counter()
             print(f"Embedding generation took {t1 - t0:.3f} seconds")

@@ -491,10 +491,15 @@ def run_test_suite():
             }
         },
         {
-            "name": "Exact Match - First + Last Name",
+            "name": "Fuzzy Search - Full Info",
             "query": {
                 "legalFirstName": "MICHAEL",
-                "legalLastName": "LEE"
+                "legalLastName": "LEE",
+                "legalMiddleNames": "RICHARD",
+                "dob": "2001-02-10",
+                "sexCode": "M",
+                "postalCode": "V3N1H4",
+                "mincode": "05757079"
             }
         },
         {
@@ -528,42 +533,46 @@ def run_test_suite():
     
     fuzzy_test_cases = [
         {
-            "name": "Fuzzy Search - Similar Name",
+            "name": "Fuzzy Search - Typo Name",
             "query": {
                 "legalFirstName": "MICHEAL",  # Typo
-                "legalLastName": "LEE"
-            }
-        },
-        {
-            "name": "Fuzzy Search - Name with DOB",
-            "query": {
-                "legalFirstName": "MICHAEL",
                 "legalLastName": "LEE",
-                "dob": "2001-02-10"
+                "legalMiddleNames": "RICHARD"
             }
         },
         {
-            "name": "Fuzzy Search - Name with Postal",
-            "query": {
-                "legalFirstName": "MICHAEL",
-                "legalLastName": "LEE",
-                "postalCode": "V3N1H4"
-            }
-        },
-        {
-            "name": "Fuzzy Search - Common Name",
-            "query": {
-                "legalFirstName": "DAVID",
-                "legalLastName": "WANG",
-                "sexCode": "M"
-            }
-        },
-        {
-            "name": "Fuzzy Search - Full Info",
+            "name": "Fuzzy Search - Typo DOB",
             "query": {
                 "legalFirstName": "MICHAEL",
                 "legalLastName": "LEE",
                 "legalMiddleNames": "RICHARD",
+                "dob": "2010-02-10"
+            }
+        },
+        {
+            "name": "Fuzzy Search - Typo Postal code",
+            "query": {
+                "legalFirstName": "MICHAEL",
+                "legalLastName": "LEE",
+                "postalCode": "V3N4H1",
+                "mincode": "05757079"
+            }
+        },
+        {
+            "name": "Fuzzy Search - Typo mincode",
+            "query": {
+                "legalFirstName": "MICHAEL",
+                "legalLastName": "LEE",
+                "postalCode": "V3N4H1",
+                "mincode": "0575079"
+            }
+        },
+        {
+            "name": "Fuzzy Search - Typo Full Info",
+            "query": {
+                "legalFirstName": "MICHAEL",
+                "legalLastName": "LEE",
+                "legalMiddleNames": "RICH",
                 "dob": "2001-02-10",
                 "sexCode": "M",
                 "postalCode": "V3N1H4",

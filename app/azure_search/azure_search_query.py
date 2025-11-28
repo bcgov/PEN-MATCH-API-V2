@@ -2,7 +2,6 @@ from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
 from azure.identity import DefaultAzureCredential
 from openai import AzureOpenAI
-import difflib
 import time
 from typing import Dict, List, Any, Optional
 
@@ -21,7 +20,7 @@ class StudentSearchService:
         self.openai_client = AzureOpenAI(
             api_key=settings.openai_api_key,
             api_version="2023-05-15",
-            azure_endpoint=settings.openai_api_base_embedding_3,
+            azure_endpoint=settings.openai_api_base_embedding,
         )
 
         try:
@@ -63,21 +62,28 @@ class StudentSearchService:
             print(f"Generating embedding for: {text}")
             t0 = time.perf_counter()
             resp = self.openai_client.embeddings.create(
-                model="text-embedding-3-large",
+                model="text-embedding-ada-002",
                 input=text,
-                dimensions=3072,
+                dimensions=1536,
             )
             t1 = time.perf_counter()
-            # print(f"Embedding generation took {t1 - t0:.3f} seconds")
+            print(f"Embedding generation took {t1 - t0:.3f} seconds")
             return resp.data[0].embedding
         except Exception as e:
             print(f"Error generating embedding for '{text}': {e}")
             return None
 
     # ------------------------------------------------------------------
-    # Similarity helpers
+    # Similarity helpers (NO difflib)
     # ------------------------------------------------------------------
     def _postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
+        """
+        Simple, cheap similarity for Canadian postal codes:
+        - Exact normalized match → 1.0
+        - Same FSA (first 3 chars) → 0.7
+        - Same first 2 chars → 0.5
+        - Otherwise → 0.0
+        """
         if not query_postal or not candidate_postal:
             return 0.0
 
@@ -91,21 +97,42 @@ class StudentSearchService:
         if len(q) >= 3 and len(c) >= 3 and q[:3] == c[:3]:
             return 0.7
 
-        sim = difflib.SequenceMatcher(None, q, c).ratio()
-        return sim if sim > 0.5 else 0.0
+        # same first 2 chars (very rough, but better than 0)
+        if len(q) >= 2 and len(c) >= 2 and q[:2] == c[:2]:
+            return 0.5
+
+        return 0.0
 
     def _mincode_similarity(self, query_mincode: str, candidate_mincode: str) -> float:
+        """
+        Simple numeric/string similarity for mincode:
+        - Exact match (after strip + leading-zero normalization) → 1.0
+        - Same first 4 chars → 0.8
+        - Same first 3 chars → 0.6
+        - Otherwise → 0.0
+        """
         if not query_mincode or not candidate_mincode:
             return 0.0
 
         q = str(query_mincode).strip()
         c = str(candidate_mincode).strip()
 
-        if q == c:
+        # normalize leading zeros
+        q_norm = q.lstrip("0")
+        c_norm = c.lstrip("0")
+
+        if q_norm == c_norm:
             return 1.0
 
-        sim = difflib.SequenceMatcher(None, q, c).ratio()
-        return sim if sim > 0.8 else 0.0
+        # prefix-based soft match
+        max_prefix = min(len(q_norm), len(c_norm))
+
+        if max_prefix >= 4 and q_norm[:4] == c_norm[:4]:
+            return 0.8
+        if max_prefix >= 3 and q_norm[:3] == c_norm[:3]:
+            return 0.6
+
+        return 0.0
 
     def _sex_similarity(self, query_sex: str, candidate_sex: str) -> float:
         if not query_sex or not candidate_sex:
@@ -172,7 +199,7 @@ class StudentSearchService:
 
             count = len(results_list)
             print(
-                # f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
                 f"returned {count} rows"
             )
 
@@ -233,7 +260,7 @@ class StudentSearchService:
             candidates_list = list(results)
             t1 = time.perf_counter()
             print(
-                # f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds, "
+                f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds "
                 # f"returned {len(candidates_list)} rows"
             )
 

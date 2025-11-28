@@ -47,7 +47,7 @@ class AzureSearchImportService:
         print("AzureSearchImportService initialized successfully")
     
     def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
-        """Generate embedding using text-embedding-3-large model"""
+        """Generate embedding using text-embedding-ada-002 model"""
         # Format: Name: FIRST MIDDLE LAST.
         first_name = student.get('legalFirstName', '').strip()
         last_name = student.get('legalLastName', '').strip()
@@ -84,46 +84,12 @@ class AzureSearchImportService:
         except Exception as e:
             print(f"Error generating embedding for '{text}': {e}")
             # Return zero vector as fallback
-            return [0.0] * 3072
+            return [0.0] * 1536  # text-embedding-ada-002 has 1536 dimensions
     
     def _prepare_search_document(self, student: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare student data for Azure Search index"""
         # Generate embedding first
         embedding = self.generate_embedding(student)
-        
-        # Build comprehensive content field
-        content_parts = []
-        
-        # Name
-        name_parts = []
-        if student.get('legalFirstName') and student.get('legalFirstName') != 'NULL':
-            name_parts.append(student['legalFirstName'])
-        if student.get('legalMiddleNames') and student.get('legalMiddleNames') != 'NULL':
-            name_parts.append(student['legalMiddleNames'])
-        if student.get('legalLastName') and student.get('legalLastName') != 'NULL':
-            name_parts.append(student['legalLastName'])
-        
-        if name_parts:
-            content_parts.append(' '.join(name_parts))
-        
-        # Date of birth
-        if student.get('dob') and student.get('dob') != 'NULL':
-            content_parts.append(f"born {student['dob']}")
-        
-        # Sex
-        if student.get('sexCode') and student.get('sexCode') != 'NULL':
-            sex_text = "male" if student['sexCode'].upper() == 'M' else "female"
-            content_parts.append(sex_text)
-        
-        # Postal code
-        if student.get('postalCode') and student.get('postalCode') != 'NULL':
-            content_parts.append(f"postal {student['postalCode']}")
-        
-        # School code (mincode)
-        if student.get('mincode') and student.get('mincode') != 'NULL':
-            content_parts.append(f"mincode {student['mincode']}")
-        
-        content = ', '.join(content_parts)
         
         return {
             'id': str(student['student_id']),
@@ -132,7 +98,6 @@ class AzureSearchImportService:
             'legalFirstName': student.get('legalFirstName') if student.get('legalFirstName') != 'NULL' else None,
             'legalMiddleNames': student.get('legalMiddleNames') if student.get('legalMiddleNames') != 'NULL' else None,
             'legalLastName': student.get('legalLastName') if student.get('legalLastName') != 'NULL' else None,
-            'content': content,
             'nameEmbedding': embedding,  # Add the generated embedding
             'dob': student.get('dob') if student.get('dob') != 'NULL' else None,
             'sexCode': student.get('sexCode') if student.get('sexCode') != 'NULL' else None,

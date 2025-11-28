@@ -68,7 +68,7 @@ class StudentSearchService:
                 dimensions=3072,
             )
             t1 = time.perf_counter()
-            print(f"Embedding generation took {t1 - t0:.3f} seconds")
+            # print(f"Embedding generation took {t1 - t0:.3f} seconds")
             return resp.data[0].embedding
         except Exception as e:
             print(f"Error generating embedding for '{text}': {e}")
@@ -172,7 +172,7 @@ class StudentSearchService:
 
             count = len(results_list)
             print(
-                f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                # f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
                 f"returned {count} rows"
             )
 
@@ -233,8 +233,8 @@ class StudentSearchService:
             candidates_list = list(results)
             t1 = time.perf_counter()
             print(
-                f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds, "
-                f"returned {len(candidates_list)} rows"
+                # f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds, "
+                # f"returned {len(candidates_list)} rows"
             )
 
             # 4. Soft filtering: ONLY by sex (if provided)

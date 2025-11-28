@@ -419,7 +419,7 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
     print("\n=== SEARCH RESULTS ===")
     print(f"Status: {result.get('status')}")
     print(f"Search Type: {result.get('search_type', '').upper()}")
-    print(f"Total Count: {result.get('count', 0)}")
+    # print(f"Total Count: {result.get('count', 0)}")
 
     if result.get("status") == "error":
         print(f"Error Message: {result.get('message')}")
@@ -434,23 +434,30 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
     print("-" * 80)
 
     for i, cand in enumerate(result["results"][:max_display], 1):
+        first = cand.get("legalFirstName", "") or ""
         middle = cand.get("legalMiddleNames", "") or ""
-        print(f"\n{i}. Student ID: {cand.get('student_id', 'N/A')}")
-        print(f"   PEN: {cand.get('pen', 'N/A')}")
-        print(
-            f"   Name: {cand.get('legalFirstName', '')} {middle} {cand.get('legalLastName', '')}".strip()
-        )
-        print(f"   DOB: {cand.get('dob', 'N/A')}")
-        print(f"   Sex: {cand.get('sexCode', 'N/A')}")
-        print(f"   Postal: {cand.get('postalCode', 'N/A')}")
-        print(f"   Mincode: {cand.get('mincode', 'N/A')}")
-        print(f"   Grade: {cand.get('gradeCode', 'N/A')}")
-        print(f"   LocalID: {cand.get('localID', 'N/A')}")
+        last = cand.get("legalLastName", "") or ""
 
+        full_name = " ".join(p for p in [first, middle, last] if p)
+
+        print(f"\n{i}. {full_name}")
+        print(f"   Sex: {cand.get('sexCode', 'N/A')}, DOB: {cand.get('dob', 'N/A')}")
+        print(
+            f"   Postal: {cand.get('postalCode', 'N/A')}, "
+            f"Mincode: {cand.get('mincode', 'N/A')}"
+        )
+        print(
+            f"   Grade: {cand.get('gradeCode', 'N/A')}, "
+            f"Local ID: {cand.get('localID', 'N/A')}"
+        )
+
+        # Extra debug info only for fuzzy match
         if result.get("search_type") == "fuzzy_match":
-            print(f"   Base Score: {cand.get('base_search_score', 'N/A')}")
-            print(f"   Soft Score: {cand.get('soft_score', 'N/A')}")
-            print(f"   Final Score: {cand.get('final_score', 'N/A')}")
+            print(
+                f"   Base Score: {cand.get('base_search_score', 'N/A')}, "
+                f"Soft Score: {cand.get('soft_score', 'N/A')}, "
+                f"Final Score: {cand.get('final_score', 'N/A')}"
+            )
             print(f"   Search Method: {cand.get('search_method', 'N/A')}")
 
 
@@ -508,7 +515,7 @@ def run_test_suite():
         print(f"\nTest {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        # print_search_results(result, max_display=5)
+        print_search_results(result, max_display=5)
 
     # FUZZY MATCH TESTS
     print("\n\nFUZZY MATCH TESTS (VECTOR-ONLY HNSW, TOP 20)")

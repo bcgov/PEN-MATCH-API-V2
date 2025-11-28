@@ -1,8 +1,12 @@
 from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizedQuery
 from azure.identity import DefaultAzureCredential
 import os
 import difflib
 from typing import Dict, List, Any
+from openai import AzureOpenAI
+
+from config.settings import settings
 
 class StudentSearchService:
     def __init__(self):
@@ -11,6 +15,13 @@ class StudentSearchService:
         
         # Use DefaultAzureCredential for authentication
         self.credential = DefaultAzureCredential()
+        
+        # OpenAI embedding client - same as import
+        self.openai_client = AzureOpenAI(
+            api_key=settings.openai_api_key,
+            api_version="2023-05-15",
+            azure_endpoint=settings.openai_api_base_embedding_3
+        )
         
         try:
             self.search_client = SearchClient(
@@ -22,6 +33,49 @@ class StudentSearchService:
         except Exception as e:
             print(f"Failed to initialize Azure Search client: {str(e)}")
             raise
+    
+    def generate_embedding(self, query_data: Dict[str, Any]) -> List[float]:
+        """Generate embedding using text-embedding-3-large model - same as import"""
+        # Format: Name: FIRST MIDDLE LAST.
+        first_name = query_data.get('legalFirstName', '').strip()
+        last_name = query_data.get('legalLastName', '').strip()
+        middle_names = query_data.get('legalMiddleNames', '').strip()
+        
+        if first_name == 'NULL':
+            first_name = ''
+        if last_name == 'NULL':
+            last_name = ''
+        if middle_names == 'NULL':
+            middle_names = ''
+        
+        # Build full name with middle names in between
+        name_parts = []
+        if first_name:
+            name_parts.append(first_name)
+        if middle_names:
+            name_parts.append(middle_names)
+        if last_name:
+            name_parts.append(last_name)
+        
+        full_name = ' '.join(name_parts)
+        text = f"{full_name}."
+        
+        if not text.strip() or text == ".":
+            return None
+        
+        print(f"Generating embedding for: {text}")
+        
+        try:
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-large",
+                input=text,
+                dimensions=3072
+            )
+            embedding = response.data[0].embedding
+            return embedding
+        except Exception as e:
+            print(f"Error generating embedding for '{text}': {e}")
+            return None
     
     def _calculate_postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
         """Calculate postal code similarity with improved matching"""
@@ -165,7 +219,7 @@ class StudentSearchService:
                 "search_type": "exact_match"
             }
         else:
-            # Step 2: Enhanced fuzzy search with field scoring
+            # Step 2: Enhanced fuzzy search with field scoring + vector search
             fuzzy_results = self._enhanced_fuzzy_search(query_data)
             return {
                 "status": "success",
@@ -230,9 +284,12 @@ class StudentSearchService:
     
     def _enhanced_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Enhanced fuzzy search with field-based scoring similar to PGVector approach
+        Enhanced fuzzy search with vector embedding + field-based scoring
         """
-        # Build search text from name fields
+        # Generate embedding for the query
+        query_embedding = self.generate_embedding(query_data)
+        
+        # Build search text from name fields for text search fallback
         search_terms = []
         if query_data.get("legalFirstName"):
             search_terms.append(query_data["legalFirstName"])
@@ -243,23 +300,56 @@ class StudentSearchService:
         
         search_text = " ".join(search_terms) if search_terms else query_data.get("content", "")
         
-        if not search_text:
-            return {"results": [], "count": 0, "methodology": "No search text provided"}
+        if not search_text and not query_embedding:
+            return {"results": [], "count": 0, "methodology": "No search text or embedding available"}
         
         try:
-            # Step 1: Get broad set of candidates from Azure Search
-            results = self.search_client.search(
-                search_text=search_text,
-                search_fields=["content", "legalFirstName", "legalLastName", "legalMiddleNames"],
-                scoring_profile="identityScoring",
-                top=500,  # Get more candidates for better scoring
-                include_total_count=True
-            )
+            # Prepare vector query if embedding is available
+            vector_queries = []
+            if query_embedding:
+                vector_query = VectorizedQuery(
+                    vector=query_embedding,
+                    k_nearest_neighbors=500,  # Get 500 nearest neighbors
+                    fields="nameEmbedding"
+                )
+                vector_queries.append(vector_query)
+            
+            # Perform hybrid search (vector + text)
+            if vector_queries and search_text:
+                # Hybrid search: both vector and text
+                results = self.search_client.search(
+                    search_text=search_text,
+                    vector_queries=vector_queries,
+                    search_fields=["content", "legalFirstName", "legalLastName", "legalMiddleNames"],
+                    scoring_profile="identityScoring",
+                    top=500,
+                    include_total_count=True
+                )
+                search_method = "hybrid_vector_text"
+            elif vector_queries:
+                # Vector-only search
+                results = self.search_client.search(
+                    search_text="*",
+                    vector_queries=vector_queries,
+                    top=500,
+                    include_total_count=True
+                )
+                search_method = "vector_only"
+            else:
+                # Text-only search (fallback)
+                results = self.search_client.search(
+                    search_text=search_text,
+                    search_fields=["content", "legalFirstName", "legalLastName", "legalMiddleNames"],
+                    scoring_profile="identityScoring",
+                    top=500,
+                    include_total_count=True
+                )
+                search_method = "text_only"
             
             candidates_list = list(results)
-            print(f"Azure Search returned {len(candidates_list)} initial candidates")
+            print(f"Azure Search returned {len(candidates_list)} initial candidates using {search_method}")
             
-            # Step 2: Apply reasonable filtering and soft scoring
+            # Apply reasonable filtering and soft scoring
             has_middle_name = self._has_middle_name_query(query_data)
             scored_candidates = []
             
@@ -282,15 +372,16 @@ class StudentSearchService:
                 candidate["soft_score"] = soft_score
                 candidate["final_score"] = final_score
                 candidate["has_middle_name_query"] = has_middle_name
+                candidate["search_method"] = search_method
                 
                 scored_candidates.append(candidate)
             
-            # Step 3: Sort by final score and limit to top 100
+            # Sort by final score and limit to top 100
             scored_candidates.sort(key=lambda x: x["final_score"], reverse=True)
             top_candidates = scored_candidates[:100]
             
             # Debug: Print top 5 candidates
-            print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ===")
+            print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
             for i, candidate in enumerate(top_candidates[:5], 1):
                 middle = candidate.get('legalMiddleNames', '') or ''
                 print(f"{i}. {candidate.get('legalFirstName', '')} {middle} {candidate.get('legalLastName', '')}")
@@ -301,10 +392,12 @@ class StudentSearchService:
                 print()
             
             methodology = {
-                "step1": "Azure Search with name fields",
+                "step1": f"Azure Search with {search_method} (embedding + name fields)",
                 "step2": f"Reasonable filtering (sex match, min score 0.5)",
                 "step3": f"Soft scoring (DOB, postal, mincode, sex) - weights adjusted for middle name: {has_middle_name}",
                 "step4": "Final ranking (base score + soft score)",
+                "search_method": search_method,
+                "embedding_generated": query_embedding is not None,
                 "candidates_before_filtering": len(candidates_list),
                 "candidates_after_filtering": len(scored_candidates),
                 "has_middle_name_in_query": has_middle_name
@@ -345,6 +438,8 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
             print(f"  - Step 2: {methodology.get('step2', 'N/A')}")
             print(f"  - Step 3: {methodology.get('step3', 'N/A')}")
             print(f"  - Step 4: {methodology.get('step4', 'N/A')}")
+            print(f"  - Search Method: {methodology.get('search_method', 'N/A')}")
+            print(f"  - Embedding Generated: {methodology.get('embedding_generated', False)}")
             print(f"  - Candidates before/after filtering: {methodology.get('candidates_before_filtering', 0)}/{methodology.get('candidates_after_filtering', 0)}")
     
     if result['status'] == 'error':
@@ -373,6 +468,7 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
             print(f"   Base Score: {candidate.get('base_search_score', 'N/A')}")
             print(f"   Soft Score: {candidate.get('soft_score', 'N/A')}")
             print(f"   Final Score: {candidate.get('final_score', 'N/A')}")
+            print(f"   Search Method: {candidate.get('search_method', 'N/A')}")
 
 # Test cases
 def run_test_suite():
@@ -380,7 +476,7 @@ def run_test_suite():
     Run test suite with exact and fuzzy search tests
     """
     print("="*60)
-    print("AZURE SEARCH TEST SUITE")
+    print("AZURE SEARCH TEST SUITE (WITH VECTOR EMBEDDING)")
     print("="*60)
     
     # EXACT MATCH TESTS
@@ -427,7 +523,7 @@ def run_test_suite():
         print_search_results(result, max_display=5)
     
     # FUZZY MATCH TESTS
-    print("\n\nFUZZY MATCH TESTS")
+    print("\n\nFUZZY MATCH TESTS (WITH VECTOR EMBEDDING)")
     print("="*40)
     
     fuzzy_test_cases = [

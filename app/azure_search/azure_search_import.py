@@ -124,7 +124,6 @@ class AzureSearchImportService:
     ) -> Dict[str, Any]:
         """Prepare student data for Azure Search index."""
         return {
-            "id": str(student["student_id"]),
             "student_id": str(student["student_id"]),
             "pen": student.get("pen") if student.get("pen") != "NULL" else None,
             "legalFirstName": student.get("legalFirstName")

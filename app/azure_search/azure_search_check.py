@@ -82,7 +82,7 @@ def print_sample_docs():
 # 4. FETCH SPECIFIC DOCUMENT BY KEY
 # ---------------------------------------------------------------
 def get_by_id(doc_id):
-    print(f"\n=== FETCH DOCUMENT id={doc_id} ===")
+    print(f"\n=== FETCH DOCUMENT student_id={doc_id} ===")
     try:
         doc = search_client.get_document(doc_id)
         for key, value in doc.items():
@@ -105,7 +105,7 @@ def check_vector_length(n=5):
         results = search_client.search(
             search_text="*", 
             top=n, 
-            select=["id", "nameEmbedding"]
+            select=["student_id", "nameEmbedding"]
         )
         
         count = 0
@@ -113,9 +113,9 @@ def check_vector_length(n=5):
             count += 1
             emb = r.get("nameEmbedding", None)
             if emb:
-                print(f"id={r['id']} | embedding length={len(emb)}")
+                print(f"student_id={r['student_id']} | embedding length={len(emb)}")
             else:
-                print(f"id={r['id']} | NO embedding found")
+                print(f"student_id={r['student_id']} | NO embedding found")
                 
         if count == 0:
             print("No documents found for vector check")
@@ -175,9 +175,9 @@ if __name__ == "__main__":
     try:
         print_index_schema()
         count_documents()
-        print_sample_docs()
-        check_vector_length()
-        search_robyn_anderson()
+        # print_sample_docs()
+        # check_vector_length()
+        # search_robyn_anderson()
         
         # Test with a specific document ID if you have one
         # get_by_id("some-student-id-here")

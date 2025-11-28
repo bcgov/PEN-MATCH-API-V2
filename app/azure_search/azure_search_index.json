@@ -1,8 +1,7 @@
 {
   "name": "student-index",
   "fields": [
-    { "name": "id", "type": "Edm.String", "key": true, "searchable": false, "filterable": true, "sortable": false },
-    { "name": "student_id", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
+    { "name": "student_id", "type": "Edm.String", "key": true, "searchable": false, "filterable": true, "sortable": false },
     { "name": "pen", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
 
     { "name": "legalFirstName", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },

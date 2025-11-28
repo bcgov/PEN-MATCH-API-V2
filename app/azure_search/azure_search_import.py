@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from azure.identity import DefaultAzureCredential
 from azure.search.documents import SearchClient
 from azure.core.exceptions import HttpResponseError
+from openai import AzureOpenAI
 
 from database.postgresql import PostgreSQLManager
 from config.settings import settings
@@ -30,15 +31,67 @@ class AzureSearchImportService:
             credential=self.credential
         )
         
+        # OpenAI embedding client
+        self.openai_client = AzureOpenAI(
+            api_key=settings.openai_api_key,
+            api_version="2023-05-15",
+            azure_endpoint=settings.openai_api_base_embedding_3
+        )
+        
         # Database setup
         self.db = PostgreSQLManager(max_db_connections)
         self.stats = AzureSearchProcessingStats()
         
         print("Initializing AzureSearchImportService...")
+        print(f"Embedding endpoint: {settings.openai_api_base_embedding_3}")
         print("AzureSearchImportService initialized successfully")
+    
+    def generate_embedding(self, student: Dict[str, Any]) -> List[float]:
+        """Generate embedding using text-embedding-3-large model"""
+        # Format: Name: FIRST MIDDLE LAST.
+        first_name = student.get('legalFirstName', '').strip()
+        last_name = student.get('legalLastName', '').strip()
+        middle_names = student.get('legalMiddleNames', '').strip()
+        
+        if first_name == 'NULL':
+            first_name = ''
+        if last_name == 'NULL':
+            last_name = ''
+        if middle_names == 'NULL':
+            middle_names = ''
+        
+        # Build full name with middle names in between
+        name_parts = []
+        if first_name:
+            name_parts.append(first_name)
+        if middle_names:
+            name_parts.append(middle_names)
+        if last_name:
+            name_parts.append(last_name)
+        
+        full_name = ' '.join(name_parts)
+        text = f"{full_name}."
+        
+        print(f"Generating embedding for: {text}")
+        
+        try:
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-large",
+                input=text,
+                dimensions=3072
+            )
+            embedding = response.data[0].embedding
+            return embedding
+        except Exception as e:
+            print(f"Error generating embedding for '{text}': {e}")
+            # Return zero vector as fallback
+            return [0.0] * 3072
     
     def _prepare_search_document(self, student: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare student data for Azure Search index"""
+        # Generate embedding first
+        embedding = self.generate_embedding(student)
+        
         # Build comprehensive content field
         content_parts = []
         
@@ -81,6 +134,7 @@ class AzureSearchImportService:
             'legalMiddleNames': student.get('legalMiddleNames') if student.get('legalMiddleNames') != 'NULL' else None,
             'legalLastName': student.get('legalLastName') if student.get('legalLastName') != 'NULL' else None,
             'content': content,
+            'nameEmbedding': embedding,  # Add the generated embedding
             'dob': student.get('dob') if student.get('dob') != 'NULL' else None,
             'sexCode': student.get('sexCode') if student.get('sexCode') != 'NULL' else None,
             'postalCode': student.get('postalCode') if student.get('postalCode') != 'NULL' else None,
@@ -143,7 +197,7 @@ class AzureSearchImportService:
                     return 0
                 
                 documents = []
-                for row in rows:
+                for i, row in enumerate(rows):
                     try:
                         # Create student object with correct field mapping
                         student = {
@@ -160,6 +214,7 @@ class AzureSearchImportService:
                             "localID": row["local_id"]
                         }
                         
+                        print(f"Processing student {i+1}/{len(rows)}: {student.get('legalFirstName', '')} {student.get('legalLastName', '')}")
                         document = self._prepare_search_document(student)
                         documents.append(document)
                         
@@ -215,7 +270,7 @@ class AzureSearchImportService:
                         break
                     
                     documents = []
-                    for row in rows:
+                    for i, row in enumerate(rows):
                         try:
                             # Create student object with correct field mapping
                             student = {
@@ -232,6 +287,9 @@ class AzureSearchImportService:
                                 "localID": row["local_id"]
                             }
                             
+                            if (i + 1) % 50 == 0:  # Progress indicator for large batches
+                                print(f"Processing student {i+1}/{len(rows)} in current batch")
+                            
                             document = self._prepare_search_document(student)
                             documents.append(document)
                             
@@ -245,10 +303,9 @@ class AzureSearchImportService:
                     self.stats.total_failed += len(rows) - uploaded
                     self.stats.batches_completed += 1
                     
-                    if self.stats.batches_completed % 10 == 0:
-                        elapsed = time.time() - self.stats.start_time
-                        rate = self.stats.total_processed / elapsed if elapsed > 0 else 0
-                        print(f"Progress: {self.stats.total_processed:,} processed ({rate:.1f}/sec)")
+                    elapsed = time.time() - self.stats.start_time
+                    rate = self.stats.total_processed / elapsed if elapsed > 0 else 0
+                    print(f"Batch {self.stats.batches_completed}: {uploaded} uploaded, Total: {self.stats.total_processed:,} ({rate:.1f}/sec)")
             
             elapsed = time.time() - self.stats.start_time
             print(f"Import completed: {self.stats.total_processed:,} students in {elapsed:.1f}s")
@@ -294,7 +351,7 @@ class AzureSearchImportService:
                         continue
                     
                     documents = []
-                    for row in rows:
+                    for j, row in enumerate(rows):
                         try:
                             # Create student object with correct field mapping
                             student = {
@@ -311,6 +368,7 @@ class AzureSearchImportService:
                                 "localID": row["local_id"]
                             }
                             
+                            print(f"  Processing record {j+1}/{len(rows)}: {student.get('legalFirstName', '')} {student.get('legalMiddleNames', '')} {student.get('legalLastName', '')}")
                             document = self._prepare_search_document(student)
                             documents.append(document)
                             

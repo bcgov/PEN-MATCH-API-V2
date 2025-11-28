@@ -37,7 +37,7 @@
         "weights": {
           "legalFirstName": 10,
           "legalLastName": 10,
-          "legalMiddleNames": 10,
+          "legalMiddleNames": 2,
           "dob": 8,
           "postalCode": 5,
           "mincode": 4,

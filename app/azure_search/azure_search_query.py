@@ -89,12 +89,22 @@ class AzureSearchQuery:
         with open(self.log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{timestamp}] {message}\n")
 
+
+
     def generate_name_embedding(self, first_name: str, last_name: str, middle_names: str = "") -> Tuple[List[float], float]:
         """Generate embedding for name search using same format as import"""
-        start_time = time.perf_counter()
-        
-        name_part = f"{first_name} {last_name}".strip()
-        text = f"Name: {name_part}, Middlename: {middle_names}"
+        start_time = time.perf_counter()  
+
+        parts = []
+        if first_name:
+            parts.append(first_name.strip())
+        if middle_names:
+            parts.append(middle_names.strip())
+        if last_name:
+            parts.append(last_name.strip())
+        text = " ".join(parts) + "."
+
+
         
         self._log_debug(f"Generating embedding for: {text}")
         

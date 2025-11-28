@@ -340,6 +340,7 @@ class StudentSearchService:
                 print(
                     f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
                 )
+                print(f"   Grade: {cand.get('grade', '')}, Local ID: {cand.get('localId', '')}")
                 print(
                     f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
                     f"Soft Score: {cand.get('soft_score', 0):.4f}, "
@@ -485,7 +486,7 @@ def run_test_suite():
         },
         {
             # still goes through HARD filter (all fields exact) and should be exact_match
-            "name": "Fuzzy Search - Full Info (but exact data, should hit hard filter)",
+            "name": "Exact Search - Full Info",
             "query": {
                 "legalFirstName": "MICHAEL",
                 "legalLastName": "LEE",
@@ -518,7 +519,7 @@ def run_test_suite():
         print(f"\nTest {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        print_search_results(result, max_display=5)
+        # print_search_results(result, max_display=5)
 
     # FUZZY MATCH TESTS
     print("\n\nFUZZY MATCH TESTS (WITH VECTOR EMBEDDING)")
@@ -568,8 +569,8 @@ def run_test_suite():
                 "legalMiddleNames": "RICH",  # shortened
                 "dob": "2001-02-10",
                 "sexCode": "M",
-                "postalCode": "V3N1H4",
-                "mincode": "05757079",
+                "postalCode": "V3N1H5",
+                "mincode": "5757079",
             },
         },
     ]
@@ -578,7 +579,7 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        print_search_results(result, max_display=5)
+        # print_search_results(result, max_display=5)
 
 
 if __name__ == "__main__":

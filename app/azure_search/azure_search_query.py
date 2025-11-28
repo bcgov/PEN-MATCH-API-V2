@@ -5,15 +5,23 @@ from typing import Dict, List, Any
 
 class StudentSearchService:
     def __init__(self):
-        self.search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-        self.search_key = os.getenv("AZURE_SEARCH_KEY")
+        self.search_endpoint = "https://pen-match-api-v2-search.search.windows.net"
         self.index_name = "student-index"
         
-        self.search_client = SearchClient(
-            endpoint=self.search_endpoint,
-            index_name=self.index_name,
-            credential=AzureKeyCredential(self.search_key)
-        )
+        # Use DefaultAzureCredential for authentication
+        self.credential = DefaultAzureCredential()
+        
+        try:
+            self.search_client = SearchClient(
+                endpoint=self.search_endpoint,
+                index_name=self.index_name,
+                credential=self.credential
+            )
+            print("Azure Search client initialized successfully")
+        except Exception as e:
+            print(f"Failed to initialize Azure Search client: {str(e)}")
+            raise
+    
     
     def search_students(self, query_data: Dict[str, str]) -> Dict[str, Any]:
         """

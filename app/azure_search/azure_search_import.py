@@ -214,13 +214,15 @@ class AzureSearchImportService:
         return total_uploaded
 
     # ------------------------------------------------------------------
-    # Single batch by offset (mostly for testing)
+    # Single batch by offset (for testing / manual runs)
     # ------------------------------------------------------------------
     async def import_one_batch(self, offset: int = 0, batch_size: int = 100) -> int:
-        """Import single batch using LIMIT/OFFSET (for testing/sampling)."""
-        # Clamp batch_size so we don't create giant uploads
-        batch_size = min(batch_size, self.max_search_chunk_size)
+        """
+        Import a single batch using LIMIT/OFFSET.
 
+        - batch_size is how many rows we pull from Postgres (can be 1000, 5000, 10000…)
+        - Azure Search uploads are still chunked to 1000 docs inside _batch_upload.
+        """
         start_time = time.time()
 
         await self.db.create_pool()
@@ -271,10 +273,12 @@ class AzureSearchImportService:
     # Import all students (optimized for 4M+ using keyset pagination)
     # ------------------------------------------------------------------
     async def import_all_students(self, batch_size: int = 1000) -> int:
-        """Import all students in batches using keyset pagination on student_id."""
-        # Clamp batch_size so we don't overshoot Azure Search limits
-        batch_size = min(batch_size, self.max_search_chunk_size)
+        """
+        Import all students in batches using keyset pagination on student_id.
 
+        - batch_size controls how many rows per DB query (1000, 5000, 10000, etc.).
+        - Each batch is still uploaded to Search in 1000-doc chunks.
+        """
         start_time = time.time()
         self.stats = AzureSearchProcessingStats(start_time=start_time)
 
@@ -377,10 +381,16 @@ class AzureSearchImportService:
             await self.db.close()
 
     # ------------------------------------------------------------------
-    # Import by specific names
+    # Import by specific names (can be many names, many students)
     # ------------------------------------------------------------------
     async def import_all_records_by_names(self, target_names: List[tuple]) -> int:
-        """Import all student records that match specified name pairs."""
+        """
+        Import all student records that match specified name pairs.
+
+        - target_names can have 10, 100, 10,000+ name pairs.
+        - For each name pair, we load all matching students, embed them in batch,
+          and upload them in 1000-doc chunks.
+        """
         start_time = time.time()
 
         await self.db.create_pool()
@@ -406,7 +416,7 @@ class AzureSearchImportService:
                           AND LOWER(TRIM(legal_last_name)) = LOWER($2)
                         ORDER BY student_id ASC
                     """
-                    rows = await conn.fetch(first_name.strip(), last_name.strip())
+                    rows = await conn.fetch(query, first_name.strip(), last_name.strip())
 
                 if not rows:
                     continue
@@ -447,7 +457,7 @@ async def import_student_data():
 
 
 def import_one_batch(offset: int = 0, batch_size: int = 100) -> int:
-    """Synchronous wrapper for batch import by offset (testing)."""
+    """Synchronous wrapper for batch import by offset (testing/manual)."""
     service = AzureSearchImportService()
     return asyncio.run(service.import_one_batch(offset, batch_size))
 
@@ -477,6 +487,7 @@ if __name__ == "__main__":
         try:
             if len(sys.argv) > 1:
                 if sys.argv[1] == "all":
+                    # e.g. python -m azure_search.azure_search_import all 10000
                     batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1000
                     result = await service.import_all_students(batch_size)
                 elif sys.argv[1] == "names":
@@ -495,6 +506,7 @@ if __name__ == "__main__":
                     ]
                     result = await service.import_all_records_by_names(target_names)
                 else:
+                    # e.g. python -m azure_search.azure_search_import 10000 10000
                     offset = int(sys.argv[1])
                     batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
                     result = await service.import_one_batch(offset, batch_size)

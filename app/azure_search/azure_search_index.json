@@ -8,9 +8,6 @@
     { "name": "legalFirstName", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
     { "name": "legalMiddleNames", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
     { "name": "legalLastName", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
-
-    { "name": "content", "type": "Edm.String", "searchable": true, "filterable": false, "sortable": false },
-
     {
       "name": "nameEmbedding",
       "type": "Collection(Edm.Single)",

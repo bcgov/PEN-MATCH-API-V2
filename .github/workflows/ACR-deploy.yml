@@ -1,0 +1,57 @@
+name: Build & Deploy to Azure App Service (Container)
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      ACR_NAME: penmatchacr
+      ACR_LOGIN_SERVER: penmatchacr.azurecr.io
+      IMAGE_NAME: pen-match-v2-docker
+      APP_SERVICE_NAME: pen-match-api-v2-app
+      RESOURCE_GROUP: pen-match-api-v2
+
+    steps:
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Azure login using OIDC (NO secrets except IDs)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Login to ACR
+      - name: ACR Login
+        run: az acr login --name $ACR_NAME
+
+      # Build & Push image to ACR
+      - name: Build and push container image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG .
+          docker push $ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG
+          echo "IMAGE_FULL=$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" >> $GITHUB_ENV
+
+      # Deploy to App Service (tell it to use new image)
+      - name: Update Azure Web App with new container image
+        run: |
+          az webapp config container set \
+            --name $APP_SERVICE_NAME \
+            --resource-group $RESOURCE_GROUP \
+            --docker-custom-image-name $IMAGE_FULL \
+            --docker-registry-server-url https://$ACR_LOGIN_SERVER
+
+      # Restart App Service (ensures new image runs)
+      - name: Restart App Service
+        run: |
+          az webapp restart \
+            --name $APP_SERVICE_NAME \
+            --resource-group $RESOURCE_GROUP

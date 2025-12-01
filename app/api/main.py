@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
 
@@ -58,6 +58,15 @@ class SearchQuery(BaseModel):
     pen: Optional[str] = Field(None, description="PEN number")
     gradeCode: Optional[str] = Field(None, description="Grade code")
 
+class MatchingRecord(BaseModel):
+    matchingPEN: str
+    studentID: str
+
+class PenMatchResponse(BaseModel):
+    matchingRecords: List[MatchingRecord]
+    penStatus: str
+    penStatusMessage: Optional[str] = None
+
 class MatchResponse(BaseModel):
     status: str
     search_type: Optional[str] = None
@@ -80,6 +89,65 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "PEN Match API V2"
     }
+
+# New PEN match endpoint with specified format
+@app.post("/pen-match", response_model=PenMatchResponse)
+async def pen_match(student_query: StudentQuery):
+    """
+    Match students and return PEN numbers in the specified format
+    
+    Args:
+        student_query: Student information for matching
+    
+    Returns:
+        PenMatchResponse: Formatted response with matching PEN records
+    """
+    try:
+        logger.info(f"Received PEN match request for: {student_query.legalFirstName} {student_query.legalLastName}")
+        
+        # Convert Pydantic model to dict and search
+        query_dict = student_query.dict(exclude_unset=True)
+        result = search_student_by_query(query_dict)
+        
+        # Extract matching records from the search results
+        matching_records = []
+        pen_status = "NM"  # Default to No Match
+        pen_status_message = None
+        
+        if result.get('status') == 'success' and result.get('results'):
+            # Transform results to matching records format
+            for student in result['results']:
+                if 'pen' in student and 'studentID' in student:
+                    matching_records.append(MatchingRecord(
+                        matchingPEN=str(student['pen']),
+                        studentID=str(student['studentID'])
+                    ))
+            
+            # Determine PEN status based on results
+            if len(matching_records) == 1:
+                pen_status = "EM"  # Exact Match
+            elif len(matching_records) > 1:
+                pen_status = "CM"  # Confident Match (multiple matches)
+            else:
+                pen_status = "NM"  # No Match
+                pen_status_message = "No matching records found"
+        else:
+            pen_status_message = result.get('message', 'Search failed')
+        
+        logger.info(f"PEN match completed - Status: {pen_status}, Matches: {len(matching_records)}")
+        
+        return PenMatchResponse(
+            matchingRecords=matching_records,
+            penStatus=pen_status,
+            penStatusMessage=pen_status_message
+        )
+    
+    except Exception as e:
+        logger.error(f"PEN match error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"PEN match failed: {str(e)}"
+        )
 
 # Original student matching endpoint
 @app.post("/match-student", response_model=MatchResponse)
@@ -109,120 +177,6 @@ async def match_student(student_query: StudentQuery):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}"
-        )
-
-# Azure Search specific endpoints
-@app.post("/azure-search/search", response_model=MatchResponse, tags=["Azure Search"])
-async def search_students(query: SearchQuery):
-    """
-    Search students using Azure Search with exact and fuzzy matching
-    
-    Supports both exact matching (hard filter) and fuzzy matching (vector-based)
-    """
-    try:
-        query_dict = query.dict(exclude_unset=True)
-        result = search_student_by_query(query_dict)
-        
-        logger.info(f"Azure Search completed - Type: {result.get('search_type')}, Count: {result.get('count')}")
-        
-        return MatchResponse(**result)
-    
-    except Exception as e:
-        logger.error(f"Azure Search error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Search failed: {str(e)}"
-        )
-
-@app.get("/azure-search/search", response_model=MatchResponse, tags=["Azure Search"])
-async def search_students_get(
-    pen: Optional[str] = Query(None, description="PEN number"),
-    legal_first_name: Optional[str] = Query(None, alias="legalFirstName"),
-    legal_middle_names: Optional[str] = Query(None, alias="legalMiddleNames"),
-    legal_last_name: Optional[str] = Query(None, alias="legalLastName"),
-    dob: Optional[str] = Query(None, description="Date of birth (YYYY-MM-DD)"),
-    local_id: Optional[str] = Query(None, alias="localID"),
-    sex_code: Optional[str] = Query(None, alias="sexCode"),
-    postal_code: Optional[str] = Query(None, alias="postalCode"),
-    mincode: Optional[str] = Query(None),
-    grade_code: Optional[str] = Query(None, alias="gradeCode"),
-):
-    """
-    Search students via GET parameters
-    """
-    try:
-        query_dict = {
-            k: v for k, v in {
-                "pen": pen,
-                "legalFirstName": legal_first_name,
-                "legalMiddleNames": legal_middle_names,
-                "legalLastName": legal_last_name,
-                "dob": dob,
-                "localID": local_id,
-                "sexCode": sex_code,
-                "postalCode": postal_code,
-                "mincode": mincode,
-                "gradeCode": grade_code,
-            }.items() if v is not None
-        }
-        
-        if not query_dict:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one search parameter must be provided"
-            )
-        
-        result = search_student_by_query(query_dict)
-        return MatchResponse(**result)
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Azure Search GET error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Search failed: {str(e)}"
-        )
-
-@app.get("/azure-search/health", tags=["Azure Search"])
-async def azure_search_health():
-    """Check Azure Search service health"""
-    try:
-        service = StudentSearchService()
-        return {
-            "status": "healthy",
-            "service": "Azure Search",
-            "endpoint": service.search_endpoint,
-            "index": service.index_name,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Azure Search health check failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Azure Search service unavailable: {str(e)}"
-        )
-
-# Additional utility endpoints
-@app.get("/azure-search/test", tags=["Azure Search"])
-async def test_azure_search():
-    """Test Azure Search with a known query"""
-    try:
-        # Test with a simple query
-        test_query = {"legalFirstName": "MICHAEL", "legalLastName": "LEE"}
-        result = search_student_by_query(test_query)
-        
-        return {
-            "test_status": "completed",
-            "search_type": result.get('search_type'),
-            "count": result.get('count'),
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Azure Search test failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Test failed: {str(e)}"
         )
 
 if __name__ == "__main__":

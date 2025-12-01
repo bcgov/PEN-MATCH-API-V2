@@ -22,7 +22,7 @@ def fetch_one_record():
     try:
         conn = oracledb.connect(user="", password="", dsn=dsn)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM employees FETCH FIRST 1 ROWS ONLY")
+        cursor.execute("SELECT * FROM student FETCH FIRST 1 ROWS ONLY")
         record = cursor.fetchone()
         print(f"One record: {record}")
     except Exception as e:

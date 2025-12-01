@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, AliasChoices
+from pydantic import ConfigDict
 from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
@@ -45,48 +46,172 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+def normalize_dob(dob: Optional[str]) -> Optional[str]:
+    """
+    Accept both '20010210' and '2001-02-10' and normalize to 'YYYY-MM-DD'.
+    If format is unrecognized, return as-is.
+    """
+    if not dob:
+        return None
+
+    dob = dob.strip()
+    try:
+        # Old format: YYYYMMDD
+        if len(dob) == 8 and dob.isdigit():
+            dt = datetime.strptime(dob, "%Y%m%d")
+            return dt.strftime("%Y-%m-%d")
+        # New format: YYYY-MM-DD
+        if len(dob) == 10 and dob[4] == "-" and dob[7] == "-":
+            dt = datetime.strptime(dob, "%Y-%m-%d")
+            return dt.strftime("%Y-%m-%d")
+    except Exception as e:
+        logger.warning(f"Failed to parse dob='{dob}': {e}")
+
+    # Fallback: leave unchanged if we can't parse
+    return dob
+
+
+def build_query_dict(student_query: "StudentQuery") -> Dict[str, Any]:
+    """
+    Convert StudentQuery to a clean dict:
+    - use internal field names (legalFirstName, legalLastName, dob, etc.)
+    - drop None / "" / [] values
+    - normalize dob format
+    """
+    raw = student_query.model_dump(exclude_unset=True, by_alias=False)
+    cleaned: Dict[str, Any] = {}
+
+    for k, v in raw.items():
+        if v in (None, "", []):
+            continue
+        if k == "dob":
+            v = normalize_dob(v)
+            if not v:
+                continue
+        cleaned[k] = v
+
+    return cleaned
+
+
+# -------------------------------------------------------------------
 # Pydantic models
 # -------------------------------------------------------------------
 class StudentQuery(BaseModel):
+    """
+    Backward-compatible model:
+
+    Required (must be present as either new or legacy names):
+      - legalFirstName  ← legalFirstName OR givenName
+      - legalLastName   ← legalLastName OR surname
+
+    Optional fields can come from either new or legacy keys:
+      - legalMiddleNames  ← legalMiddleNames OR middleName
+      - sexCode           ← sexCode OR sex
+      - postalCode        ← postalCode OR postal
+      - gradeCode         ← gradeCode OR enrolledGradeCode
+      - dob               ← dob (either 'YYYYMMDD' or 'YYYY-MM-DD')
+      - mincode, localID, pen as-is
+
+    Unknown/extra fields (usualSurname, assignNewPEN, etc.) are ignored.
+    """
+
+    model_config = ConfigDict(extra="ignore")  # ignore unknown fields
+
     # Required
-    legalFirstName: str = Field(..., description="Legal first name of the student")
-    legalLastName: str = Field(..., description="Legal last name of the student")
+    legalFirstName: str = Field(
+        ...,
+        description="Legal first name of the student",
+        validation_alias=AliasChoices("legalFirstName", "givenName"),
+    )
+    legalLastName: str = Field(
+        ...,
+        description="Legal last name of the student",
+        validation_alias=AliasChoices("legalLastName", "surname"),
+    )
 
     # Optional
     legalMiddleNames: Optional[str] = Field(
-        None, description="Legal middle names of the student"
+        None,
+        description="Legal middle names of the student",
+        validation_alias=AliasChoices("legalMiddleNames", "middleName"),
     )
     dob: Optional[str] = Field(
-        None, description="Date of birth in YYYY-MM-DD format"
+        None,
+        description="Date of birth, 'YYYY-MM-DD' or 'YYYYMMDD'",
+        validation_alias=AliasChoices("dob", "DOB"),
     )
     localID: Optional[str] = Field(
-        None, description="Local student ID"
+        None,
+        description="Local student ID",
+        validation_alias=AliasChoices("localID", "localID"),
     )
     sexCode: Optional[str] = Field(
-        None, description="Sex code"
+        None,
+        description="Sex code",
+        validation_alias=AliasChoices("sexCode", "sex"),
     )
     postalCode: Optional[str] = Field(
-        None, description="Postal code"
+        None,
+        description="Postal code",
+        validation_alias=AliasChoices("postalCode", "postal"),
     )
     mincode: Optional[str] = Field(
-        None, description="Mincode"
+        None,
+        description="Mincode",
+        validation_alias=AliasChoices("mincode", "mincode"),
     )
     pen: Optional[str] = Field(
-        None, description="PEN number"
+        None,
+        description="PEN number",
+        validation_alias=AliasChoices("pen", "pen"),
+    )
+    gradeCode: Optional[str] = Field(
+        None,
+        description="Grade code",
+        validation_alias=AliasChoices("gradeCode", "enrolledGradeCode"),
     )
 
 
 class SearchQuery(BaseModel):
-    legalFirstName: Optional[str] = Field(None, description="Legal first name")
-    legalMiddleNames: Optional[str] = Field(None, description="Legal middle names")
-    legalLastName: Optional[str] = Field(None, description="Legal last name")
-    dob: Optional[str] = Field(None, description="Date of birth (YYYY-MM-DD)")
-    localID: Optional[str] = Field(None, description="Local student ID")
-    sexCode: Optional[str] = Field(None, description="Sex code")
-    postalCode: Optional[str] = Field(None, description="Postal code")
-    mincode: Optional[str] = Field(None, description="Mincode")
-    pen: Optional[str] = Field(None, description="PEN number")
-    gradeCode: Optional[str] = Field(None, description="Grade code")
+    """
+    Optional search model (not currently used in endpoints, but kept for future).
+    Also backward-compatible with legacy names.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    legalFirstName: Optional[str] = Field(
+        None, validation_alias=AliasChoices("legalFirstName", "givenName")
+    )
+    legalMiddleNames: Optional[str] = Field(
+        None, validation_alias=AliasChoices("legalMiddleNames", "middleName")
+    )
+    legalLastName: Optional[str] = Field(
+        None, validation_alias=AliasChoices("legalLastName", "surname")
+    )
+    dob: Optional[str] = Field(
+        None, validation_alias=AliasChoices("dob", "DOB")
+    )
+    localID: Optional[str] = Field(
+        None, validation_alias=AliasChoices("localID", "localID")
+    )
+    sexCode: Optional[str] = Field(
+        None, validation_alias=AliasChoices("sexCode", "sex")
+    )
+    postalCode: Optional[str] = Field(
+        None, validation_alias=AliasChoices("postalCode", "postal")
+    )
+    mincode: Optional[str] = Field(
+        None, validation_alias=AliasChoices("mincode", "mincode")
+    )
+    pen: Optional[str] = Field(
+        None, validation_alias=AliasChoices("pen", "pen")
+    )
+    gradeCode: Optional[str] = Field(
+        None, validation_alias=AliasChoices("gradeCode", "enrolledGradeCode")
+    )
 
 
 class MatchingRecord(BaseModel):
@@ -107,16 +232,6 @@ class MatchResponse(BaseModel):
     message: Optional[str] = None
     results: Optional[list] = None
     methodology: Optional[dict] = None
-
-
-# -------------------------------------------------------------------
-# Helper: build clean query dict (remove None / empty strings)
-# -------------------------------------------------------------------
-def build_query_dict(student_query: StudentQuery) -> Dict[str, Any]:
-    # Pydantic v2: model_dump; exclude_unset avoids missing fields
-    raw = student_query.model_dump(exclude_unset=True)
-    # Drop None / "" / [] so Azure Search only sees real values
-    return {k: v for k, v in raw.items() if v not in (None, "", [])}
 
 
 # -------------------------------------------------------------------
@@ -149,8 +264,8 @@ async def pen_match(student_query: StudentQuery):
     """
     Match students and return PEN numbers in the specified format.
 
-    Only legalFirstName and legalLastName are mandatory;
-    all other fields are optional.
+    Only legalFirstName / givenName and legalLastName / surname are mandatory.
+    All other fields are optional and may use legacy names.
     """
     try:
         logger.info(
@@ -167,11 +282,19 @@ async def pen_match(student_query: StudentQuery):
 
         if result.get("status") == "success" and result.get("results"):
             for student in result["results"]:
-                if "pen" in student and "studentID" in student:
+                pen_val = student.get("pen")
+                # Support different ID field names from Azure Search
+                student_id_val = (
+                    student.get("studentID")
+                    or student.get("student_id")
+                    or student.get("id")
+                )
+
+                if pen_val and student_id_val:
                     matching_records.append(
                         MatchingRecord(
-                            matchingPEN=str(student["pen"]),
-                            studentID=str(student["studentID"]),
+                            matchingPEN=str(pen_val),
+                            studentID=str(student_id_val),
                         )
                     )
 

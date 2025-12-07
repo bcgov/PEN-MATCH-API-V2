@@ -4,18 +4,21 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install required system packages (Oracle + unzip + curl)
+
 RUN apt-get update && apt-get install -y \
-    libaio1 \
+    libaio1t64 \
     unzip \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Oracle Instant Client 23.6 (matches your VM environment)
+# Install Oracle Instant Client (current 23.26 basiclite)
+
 RUN curl -L -o instantclient-basiclite.zip \
-    https://download.oracle.com/otn_software/linux/instantclient/236000/instantclient-basiclite-linux.x64-23.6.zip \
+    https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
     && unzip instantclient-basiclite.zip -d /opt/oracle \
     && rm instantclient-basiclite.zip
+
+    
 
 # Set Oracle environment variable
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_6

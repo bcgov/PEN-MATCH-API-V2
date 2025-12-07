@@ -274,25 +274,25 @@ class FuzzySearchService:
             top_candidates = scored_candidates[:20]
 
             # Debug print top 5
-            print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
-            for i, cand in enumerate(top_candidates[:5], 1):
-                middle = cand.get("legalMiddleNames") or ""
-                print(
-                    f"{i}. {cand.get('legalFirstName', '')} {middle} {cand.get('legalLastName', '')}"
-                )
-                print(f"   Sex: {cand.get('sexCode', '')}, DOB: {cand.get('dob', '')}")
-                print(
-                    f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
-                )
-                print(
-                    f"   Grade: {cand.get('gradeCode', '')}, Local ID: {cand.get('localID', '')}"
-                )
-                print(
-                    f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
-                    f"Soft Score: {cand.get('soft_score', 0):.4f}, "
-                    f"Final Score: {cand.get('final_score', 0):.4f}"
-                )
-                print()
+            # print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
+            # for i, cand in enumerate(top_candidates[:5], 1):
+            #     middle = cand.get("legalMiddleNames") or ""
+            #     print(
+            #         f"{i}. {cand.get('legalFirstName', '')} {middle} {cand.get('legalLastName', '')}"
+            #     )
+            #     print(f"   Sex: {cand.get('sexCode', '')}, DOB: {cand.get('dob', '')}")
+            #     print(
+            #         f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
+            #     )
+            #     print(
+            #         f"   Grade: {cand.get('gradeCode', '')}, Local ID: {cand.get('localID', '')}"
+            #     )
+            #     print(
+            #         f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
+            #         f"Soft Score: {cand.get('soft_score', 0):.4f}, "
+            #         f"Final Score: {cand.get('final_score', 0):.4f}"
+            #     )
+            #     print()
 
             methodology = {
                 "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 200)",

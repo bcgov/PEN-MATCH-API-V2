@@ -95,6 +95,22 @@ def build_query_dict(student_query: "StudentQuery") -> Dict[str, Any]:
     return cleaned
 
 
+def get_pen_status_message(pen_status: str) -> Optional[str]:
+    """
+    Convert pen_status codes to human-readable messages.
+    Returns None for certain status codes to match expected response format.
+    """
+    status_messages = {
+        "AA": "All provided fields match exactly",
+        "BM": "Multiple fields match but some differences found",
+        "F1": "Only one or zero fields match",
+        "D1": None,  # Single match - no message needed
+        "CM": None,  # Multiple matches - no message needed  
+        "C0": "Too many candidates or no matches found"
+    }
+    return status_messages.get(pen_status, "Unknown status")
+
+
 # -------------------------------------------------------------------
 # Pydantic models
 # -------------------------------------------------------------------
@@ -227,6 +243,7 @@ class PenMatchResponse(BaseModel):
 
 class MatchResponse(BaseModel):
     status: str
+    pen_status: Optional[str] = None
     search_type: Optional[str] = None
     count: Optional[int] = None
     message: Optional[str] = None
@@ -266,6 +283,14 @@ async def pen_match(student_query: StudentQuery):
 
     Only legalFirstName / givenName and legalLastName / surname are mandatory.
     All other fields are optional and may use legacy names.
+
+    PEN Status Codes:
+    - AA: All provided fields match exactly
+    - BM: Multiple fields match but some differences found  
+    - F1: Only one or zero fields match
+    - D1: Single exact match found
+    - CM: Multiple matches found
+    - C0: Too many candidates or no matches found
     """
     try:
         logger.info(
@@ -276,10 +301,12 @@ async def pen_match(student_query: StudentQuery):
         query_dict = build_query_dict(student_query)
         result = search_student_by_query(query_dict)
 
+        # Extract pen_status directly from search result (new implementation)
+        pen_status = result.get("pen_status", "C0")  # Default to C0 if not found
+        
         matching_records: List[MatchingRecord] = []
-        pen_status = "NM"  # Default: No Match
-        pen_status_message: Optional[str] = None
 
+        # Process results if available
         if result.get("status") == "success" and result.get("results"):
             for student in result["results"]:
                 pen_val = student.get("pen")
@@ -288,6 +315,7 @@ async def pen_match(student_query: StudentQuery):
                     student.get("studentID")
                     or student.get("student_id")
                     or student.get("id")
+                    or student.get("studentId")  # alternative casing
                 )
 
                 if pen_val and student_id_val:
@@ -298,18 +326,15 @@ async def pen_match(student_query: StudentQuery):
                         )
                     )
 
-            if len(matching_records) == 1:
-                pen_status = "EM"  # Exact Match
-            elif len(matching_records) > 1:
-                pen_status = "CM"  # Confident Match (multiple matches)
-            else:
-                pen_status = "NM"
-                pen_status_message = "No matching records found"
-        else:
-            pen_status_message = result.get("message", "Search failed")
+        # Get status message based on pen_status
+        pen_status_message = get_pen_status_message(pen_status)
+        
+        # Override message for C0 when no results found
+        if pen_status == "C0" and not matching_records and result.get("message"):
+            pen_status_message = result.get("message")
 
         logger.info(
-            f"PEN match completed - Status: {pen_status}, "
+            f"PEN match completed - PEN Status: {pen_status}, "
             f"Matches: {len(matching_records)}"
         )
 
@@ -335,7 +360,13 @@ async def match_student(student_query: StudentQuery):
     """
     Match a student using Azure Search (original endpoint).
 
-    Returns the raw search response structure.
+    Returns the raw search response structure with new pen_status codes:
+    - AA: All provided fields match exactly
+    - BM: Multiple fields match but some differences found  
+    - F1: Only one or zero fields match
+    - D1: Single exact match found
+    - CM: Multiple matches found
+    - C0: Too many candidates or no matches found
     """
     try:
         logger.info(
@@ -348,6 +379,7 @@ async def match_student(student_query: StudentQuery):
 
         logger.info(
             f"Search completed - Status: {result.get('status')}, "
+            f"PEN Status: {result.get('pen_status')}, "
             f"Type: {result.get('search_type')}, Count: {result.get('count')}"
         )
 

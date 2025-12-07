@@ -34,14 +34,77 @@ class StudentSearchService:
             raise
 
     # ------------------------------------------------------------------
+    # Helper: search by PEN only (to know if PEN exists)
+    # ------------------------------------------------------------------
+    def _search_by_pen(self, pen: str) -> Dict[str, Any]:
+        """
+        Look up student(s) by PEN only.
+        We expect at most one record per PEN.
+        """
+        try:
+            t0 = time.perf_counter()
+            results = self.search_client.search(
+                search_text="*",
+                filter=f"pen eq '{pen}'",
+                top=2,  # we only need to know if it exists; 2 detects duplicates
+                include_total_count=True,
+            )
+            results_list = list(results)
+            t1 = time.perf_counter()
+            count = len(results_list)
+            print(f"[DEBUG] Search by PEN took {t1 - t0:.3f}s, found {count} row(s) for PEN={pen}")
+            return {"results": results_list, "count": count}
+        except Exception as e:
+            print(f"Error in _search_by_pen: {str(e)}")
+            return {"results": [], "count": 0}
+
+    # ------------------------------------------------------------------
+    # Helper: count how many fields match between query and a record
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _count_matching_fields(query_data: Dict[str, Any], record: Dict[str, Any]) -> (int, int):
+        """
+        Count how many *provided* fields in query_data match the record.
+        Only fields present in query_data are considered.
+        Returns (match_count, total_fields_compared).
+        """
+        compare_fields = [
+            "legalFirstName",
+            "legalMiddleNames",
+            "legalLastName",
+            "dob",
+            "sexCode",
+            "postalCode",
+            "mincode",
+            "gradeCode",
+            "localID",
+        ]
+
+        match_count = 0
+        total_fields = 0
+
+        for field in compare_fields:
+            qv = query_data.get(field)
+            if qv is None or qv == "":
+                continue  # not provided → we don't use it for comparison
+
+            rv = record.get(field)
+            total_fields += 1
+
+            if rv is not None and str(rv).strip().upper() == str(qv).strip().upper():
+                match_count += 1
+
+        print(f"[DEBUG] Field match count: {match_count}/{total_fields}")
+        return match_count, total_fields
+
+    # ------------------------------------------------------------------
     # Hard filter search (exact matching with OData filter)
     # ------------------------------------------------------------------
     def _hard_filter_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Perform strict hard filtering.
         If user gives multiple fields, we do AND between them.
-        This is where 'exact match' lives. If this returns >0, we never go to fuzzy.
-        (NO embedding is used in this path.)
+        This is where 'exact match' lives. If this returns >0, we don't go to fuzzy.
         """
         filters = []
 
@@ -74,12 +137,15 @@ class StudentSearchService:
 
         filter_expression = " and ".join(filters) if filters else None
 
+        print(f"[DEBUG] Hard filter expression: {filter_expression}")
+
         try:
             t0 = time.perf_counter()
+            # top=41 so we can detect "more than 40" case
             results = self.search_client.search(
                 search_text="*",
                 filter=filter_expression,
-                top=101,  # fetch 101 to detect >100
+                top=41,
                 include_total_count=True,
             )
             results_list = list(results)
@@ -87,12 +153,12 @@ class StudentSearchService:
 
             count = len(results_list)
             print(
-                f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
-                f"returned {count} rows"
+                f"[DEBUG] Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                f"returned {count} rows (top=41)"
             )
 
             return {
-                "results": results_list[:100],
+                "results": results_list[:40],  # we only keep at most 40 to return
                 "count": count,
             }
         except Exception as e:
@@ -104,38 +170,146 @@ class StudentSearchService:
     # ------------------------------------------------------------------
     def search_students(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Main search pipeline:
-        1. Hard filter (exact). If 1–100 hits → return (NO embedding).
-           If >100 → error.
-        2. If 0 → soft fuzzy search with vector-only HNSW + soft score.
+        Main search pipeline with PenStatus:
+
+        1. If PEN is provided:
+           - Look up by PEN only.
+             * Every provided field matches → AA
+             * Multiple fields match but some wrong → BM
+             * Only one or zero fields match → F1
+           - If PEN not found → treat as 'pen not exist' and continue with
+             exact + fuzzy using other fields (pen removed).
+
+        2. If no PEN (or PEN not found):
+           Exact match (hard filter, no embedding):
+             * If 1 candidate     → D1
+             * If 2–40 candidates → CM
+             * If >40 candidates  → C0 (ask for more info, no list)
+
+           If 0 exact candidates:
+             Fuzzy match:
+               * For now: top 20 fuzzy candidates, PenStatus = CM if any,
+                 or C0 if fuzzy also returns 0.
         """
-        # STEP 1: hard filter (no embedding here)
-        hard = self._hard_filter_search(query_data)
+        print("\n" + "=" * 80)
+        print("[DEBUG] Incoming query_data:", query_data)
 
-        if hard["count"] > 100:
-            return {
-                "status": "error",
-                "message": "Over 100 candidates found, need more specific information",
-                "count": hard["count"],
-                "search_type": "exact_match",
-                "results": [],
-            }
+        pen = query_data.get("pen")
+        pen_status = None
 
-        if hard["count"] > 0:
+        # ------------------------------------------------------------------
+        # Case 1: PEN provided → check if PEN exists
+        # ------------------------------------------------------------------
+        if pen:
+            print(f"[DEBUG] PEN supplied in query: {pen}")
+            pen_search = self._search_by_pen(pen)
+            if pen_search["count"] > 0:
+                # PEN exists, compare fields
+                record = pen_search["results"][0]  # assume unique PEN
+                match_count, total_fields = self._count_matching_fields(query_data, record)
+
+                if total_fields == 0 or match_count == total_fields:
+                    # Only PEN given, or all provided fields match
+                    pen_status = "AA"
+                elif match_count >= 2:
+                    pen_status = "BM"
+                else:
+                    pen_status = "F1"
+
+                print(f"[DEBUG] PEN lookup pen_status={pen_status}, count={pen_search['count']}")
+                return {
+                    "status": "success",
+                    "pen_status": pen_status,
+                    "search_type": "pen_lookup",
+                    "results": pen_search["results"],
+                    "count": pen_search["count"],
+                }
+            else:
+                # PEN not found in index → treat as "pen not exist"
+                print(f"[DEBUG] PEN {pen} not found in index, falling back to demographic search.")
+                query_no_pen = {k: v for k, v in query_data.items() if k != "pen"}
+        else:
+            print("[DEBUG] No PEN supplied, using demographic search only.")
+            query_no_pen = dict(query_data)
+
+        # ------------------------------------------------------------------
+        # Case 2: PEN not provided OR PEN not found → exact match path
+        # ------------------------------------------------------------------
+        if query_no_pen:
+            hard = self._hard_filter_search(query_no_pen)
+        else:
+            hard = {"results": [], "count": 0}
+
+        count_exact = hard["count"]
+        print(f"[DEBUG] Exact match candidate count={count_exact}")
+
+        # > 40 candidates → C0, ask for more info, no list returned
+        if count_exact > 40:
+            pen_status = "C0"
+            print(f"[DEBUG] pen_status={pen_status} (too many exact candidates)")
             return {
                 "status": "success",
-                "results": hard["results"],
-                "count": hard["count"],
+                "pen_status": pen_status,
                 "search_type": "exact_match",
+                "message": "Over 40 candidates found, please provide more specific information.",
+                "results": [],
+                "count": count_exact,
             }
 
-        # STEP 2: soft fuzzy search (delegated to fuzzy service)
-        fuzzy = self.fuzzy_service.soft_fuzzy_search(query_data)
+        # 1 candidate → D1
+        if count_exact == 1:
+            pen_status = "D1"
+            print(f"[DEBUG] pen_status={pen_status} (single exact candidate)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "exact_match",
+                "results": hard["results"],
+                "count": count_exact,
+            }
+
+        # 2–40 candidates → CM
+        if 1 < count_exact <= 40:
+            pen_status = "CM"
+            print(f"[DEBUG] pen_status={pen_status} (multiple exact candidates)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "exact_match",
+                "results": hard["results"],
+                "count": count_exact,
+            }
+
+        # ------------------------------------------------------------------
+        # Case 3: No exact candidates → Fuzzy match
+        # ------------------------------------------------------------------
+        print("[DEBUG] No exact candidates, running fuzzy search...")
+        fuzzy = self.fuzzy_service.soft_fuzzy_search(query_no_pen)
+        fuzzy_count = fuzzy.get("count", 0)
+        print(f"[DEBUG] Fuzzy match candidate count={fuzzy_count}")
+
+        if fuzzy_count == 0:
+            # Even fuzzy couldn't find anything
+            pen_status = "C0"
+            print(f"[DEBUG] pen_status={pen_status} (no fuzzy candidates)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "fuzzy_match",
+                "results": [],
+                "count": 0,
+                "methodology": fuzzy.get("methodology", {}),
+            }
+
+        # For now: top 20 fuzzy candidates & pen_status = CM
+        pen_status = "CM"
+        print(f"[DEBUG] pen_status={pen_status} (fuzzy candidates returned)")
         return {
             "status": "success",
-            "results": fuzzy["results"],
-            "count": fuzzy["count"],
+            "pen_status": pen_status,
             "search_type": "fuzzy_match",
+            "results": fuzzy["results"],   # assume fuzzy already limits to top 20
+            "count": fuzzy["count"],
             "methodology": fuzzy.get("methodology", {}),
         }
 
@@ -154,14 +328,18 @@ def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
 def print_search_results(result: Dict[str, Any], max_display: int = 5):
     print("\n=== SEARCH RESULTS ===")
     print(f"Status: {result.get('status')}")
+    print(f"Pen Status: {result.get('pen_status', 'N/A')}")
     print(f"Search Type: {result.get('search_type', '').upper()}")
-    # print(f"Total Count: {result.get('count', 0)}")
 
     if result.get("status") == "error":
         print(f"Error Message: {result.get('message')}")
         return
 
+    if "message" in result and result["message"]:
+        print(f"Message: {result['message']}")
+
     count = result.get("count", 0)
+    print(f"Total Count: {count}")
     if count == 0:
         print("No candidates found")
         return
@@ -173,10 +351,13 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
         first = cand.get("legalFirstName", "") or ""
         middle = cand.get("legalMiddleNames", "") or ""
         last = cand.get("legalLastName", "") or ""
+        pen = cand.get("pen", "N/A")
+        student_id = cand.get("student_id", cand.get("studentId", "N/A"))
 
         full_name = " ".join(p for p in [first, middle, last] if p)
 
         print(f"\n{i}. {full_name}")
+        print(f"   PEN: {pen}, Student ID: {student_id}")
         print(f"   Sex: {cand.get('sexCode', 'N/A')}, DOB: {cand.get('dob', 'N/A')}")
         print(
             f"   Postal: {cand.get('postalCode', 'N/A')}, "
@@ -311,8 +492,7 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        # Uncomment if you want to see detailed fuzzy output
-        # print_search_results(result, max_display=5)
+        print_search_results(result, max_display=5)
 
 
 if __name__ == "__main__":

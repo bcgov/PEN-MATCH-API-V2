@@ -7,22 +7,39 @@ from typing import Dict, List, Any, Optional
 
 from config.settings import settings
 
+DEBUG = __name__ == "__main__"
+
 
 class FuzzySearchService:
     """Service for fuzzy/vector-based student search operations."""
-    
+
     def __init__(self, search_endpoint: str, index_name: str, credential):
         self.search_endpoint = search_endpoint
         self.index_name = index_name
         self.credential = credential
-        
+
+        # Fields we actually need back from AI Search
+        self._select_fields = [
+            "student_id",
+            "pen",
+            "legalFirstName",
+            "legalMiddleNames",
+            "legalLastName",
+            "dob",
+            "sexCode",
+            "postalCode",
+            "mincode",
+            "gradeCode",
+            "localID",
+        ]
+
         # OpenAI embedding client
         self.openai_client = AzureOpenAI(
             api_key=settings.openai_api_key,
             api_version="2023-05-15",
-            azure_endpoint=settings.openai_api_base_embedding
+            azure_endpoint=settings.openai_api_base_embedding,
         )
-        
+
         self.search_client = SearchClient(
             endpoint=self.search_endpoint,
             index_name=self.index_name,
@@ -33,7 +50,7 @@ class FuzzySearchService:
     # Embedding generation (USED ONLY IN FUZZY PATH)
     # ------------------------------------------------------------------
     def generate_embedding(self, query_data: Dict[str, Any]) -> Optional[List[float]]:
-        """Generate embedding from full name using text-embedding-3-large."""
+        """Generate embedding from full name using Azure OpenAI embedding model."""
         first = (query_data.get("legalFirstName") or "").strip()
         last = (query_data.get("legalLastName") or "").strip()
         middle = (query_data.get("legalMiddleNames") or "").strip()
@@ -54,17 +71,20 @@ class FuzzySearchService:
             return None
 
         try:
-            print(f"Generating embedding for: {text}")
+            if DEBUG:
+                print(f"Generating embedding for: {text}")
             t0 = time.perf_counter()
             resp = self.openai_client.embeddings.create(
                 model="text-embedding-ada-002",
-                input=text
+                input=text,
             )
             t1 = time.perf_counter()
-            print(f"Embedding generation took {t1 - t0:.3f} seconds")
+            if DEBUG:
+                print(f"Embedding generation took {t1 - t0:.3f} seconds")
             return resp.data[0].embedding
         except Exception as e:
-            print(f"Error generating embedding for '{text}': {e}")
+            if DEBUG:
+                print(f"Error generating embedding for '{text}': {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -141,12 +161,12 @@ class FuzzySearchService:
 
     # ------------------------------------------------------------------
     # Soft fuzzy search: vector-only on nameEmbedding (HNSW)
-    # Vector search keeps top 200 → soft scoring keeps top 20
+    # Vector search keeps top 100 → soft scoring keeps top 20
     # ------------------------------------------------------------------
     def soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Fuzzy search with:
-        - vector-only search on nameEmbedding (HNSW, keep top 200)
+        - vector-only search on nameEmbedding (HNSW, keep top 100)
         - NO text search on content or name fields
         - metadata-based soft scoring (DOB, mincode, postal, sex)
         - after scoring, keep final top 20
@@ -165,13 +185,40 @@ class FuzzySearchService:
                 },
             }
 
-        # 2. Build vector query (HNSW, approximate, top 200)
+        # Precompute query fields once (used for all candidates)
+        q_dob = query_data.get("dob", "") or ""
+        q_postal = query_data.get("postalCode", "") or ""
+        q_mincode = query_data.get("mincode", "") or ""
+        q_sex = (query_data.get("sexCode") or "").upper()
+
+        # Default weights (importance order)
+        base_field_weights = {
+            "dob": 0.4,
+            "mincode": 0.3,
+            "postal": 0.2,
+            "sex": 0.1,
+        }
+
+        # Only use weights for fields actually provided in query
+        active_weights = {}
+        if q_dob:
+            active_weights["dob"] = base_field_weights["dob"]
+        if q_mincode:
+            active_weights["mincode"] = base_field_weights["mincode"]
+        if q_postal:
+            active_weights["postal"] = base_field_weights["postal"]
+        if q_sex:
+            active_weights["sex"] = base_field_weights["sex"]
+
+        total_weight = sum(active_weights.values())
+
+        # 2. Build vector query (HNSW, approximate, top 100 instead of 200)
         vector_queries: List[VectorizedQuery] = [
             VectorizedQuery(
                 vector=query_embedding,
-                k_nearest_neighbors=200,   # 🔹 return top 200 neighbors from vector index
+                k_nearest_neighbors=100,   # 🔹 return top 100 neighbors from vector index
                 fields="nameEmbedding",
-                exhaustive=False           # use HNSW approximate search
+                exhaustive=False,          # use HNSW approximate search
             )
         ]
 
@@ -182,69 +229,32 @@ class FuzzySearchService:
             results = self.search_client.search(
                 search_text="*",               # required param, but not used for ranking
                 vector_queries=vector_queries,
-                top=200,                       # 🔹 we pull top 200 docs back
+                top=100,                       # 🔹 pull top 100 docs back (was 200)
                 include_total_count=False,     # faster, no total count
+                select=self._select_fields,    # 🔹 reduce payload size
             )
-            candidates_list = list(results)
-            t1 = time.perf_counter()
-            print(
-                f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds "
-                # f"returned {len(candidates_list)} rows"
-            )
+            candidates_initial = 0
+            candidates_after_sex = 0
 
-            # 4. Soft filtering: ONLY by sex (if provided)
-            filtered_candidates = []
-            query_sex = (query_data.get("sexCode") or "").upper()
+            scored_candidates: List[Dict[str, Any]] = []
 
-            for cand in candidates_list:
+            for cand in results:
+                candidates_initial += 1
+
                 cand_sex = (cand.get("sexCode") or "").upper()
-                # if user provided sex, candidate must match
-                if query_sex and cand_sex and cand_sex != query_sex:
+                # 4. Soft filtering: ONLY by sex (if provided)
+                if q_sex and cand_sex and cand_sex != q_sex:
                     continue
-                filtered_candidates.append(cand)
+                candidates_after_sex += 1
 
-            # 5. Compute soft scores and final scores
-            scored_candidates = []
-            for cand in filtered_candidates:
                 base_score = cand.get("@search.score", 0.0)
 
-                dob_sim = self._dob_similarity(
-                    query_data.get("dob", ""),
-                    cand.get("dob", ""),
-                )
-                postal_sim = self._postal_similarity(
-                    query_data.get("postalCode", ""),
-                    cand.get("postalCode", ""),
-                )
-                mincode_sim = self._mincode_similarity(
-                    query_data.get("mincode", ""),
-                    cand.get("mincode", ""),
-                )
-                sex_sim = self._sex_similarity(
-                    query_data.get("sexCode", ""),
-                    cand.get("sexCode", ""),
-                )
+                # 5. Compute soft scores (cheap helpers)
+                dob_sim = self._dob_similarity(q_dob, cand.get("dob", "") or "")
+                postal_sim = self._postal_similarity(q_postal, cand.get("postalCode", "") or "")
+                mincode_sim = self._mincode_similarity(q_mincode, cand.get("mincode", "") or "")
+                sex_sim = self._sex_similarity(q_sex, cand.get("sexCode", "") or "")
 
-                # Default weights (importance order)
-                field_weights = {
-                    "dob": 0.4,
-                    "mincode": 0.3,
-                    "postal": 0.2,
-                    "sex": 0.1,
-                }
-
-                # Only use weights for fields actually provided in query
-                active_weights = {}
-                if query_data.get("dob"):
-                    active_weights["dob"] = field_weights["dob"]
-                if query_data.get("mincode"):
-                    active_weights["mincode"] = field_weights["mincode"]
-                if query_data.get("postalCode"):
-                    active_weights["postal"] = field_weights["postal"]
-                if query_data.get("sexCode"):
-                    active_weights["sex"] = field_weights["sex"]
-
-                total_weight = sum(active_weights.values())
                 soft_score = 0.0
                 if total_weight > 0:
                     if "dob" in active_weights:
@@ -269,40 +279,26 @@ class FuzzySearchService:
 
                 scored_candidates.append(cand)
 
+            t1 = time.perf_counter()
+            if DEBUG:
+                print(
+                    f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds "
+                    f"(initial={candidates_initial}, after_sex={candidates_after_sex})"
+                )
+
             # 6. Sort by final score and keep top 20
             scored_candidates.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
             top_candidates = scored_candidates[:20]
 
-            # Debug print top 5
-            # print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
-            # for i, cand in enumerate(top_candidates[:5], 1):
-            #     middle = cand.get("legalMiddleNames") or ""
-            #     print(
-            #         f"{i}. {cand.get('legalFirstName', '')} {middle} {cand.get('legalLastName', '')}"
-            #     )
-            #     print(f"   Sex: {cand.get('sexCode', '')}, DOB: {cand.get('dob', '')}")
-            #     print(
-            #         f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
-            #     )
-            #     print(
-            #         f"   Grade: {cand.get('gradeCode', '')}, Local ID: {cand.get('localID', '')}"
-            #     )
-            #     print(
-            #         f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
-            #         f"Soft Score: {cand.get('soft_score', 0):.4f}, "
-            #         f"Final Score: {cand.get('final_score', 0):.4f}"
-            #     )
-            #     print()
-
             methodology = {
-                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 200)",
+                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 100)",
                 "step2": "Sex filter only (if provided)",
                 "step3": "Soft scoring on DOB, mincode, postal, sex with dynamic weights",
                 "step4": "Final ranking by 0.3 * base_score + soft_score (keep top 20)",
                 "search_method": search_method,
                 "embedding_generated": query_embedding is not None,
-                "candidates_initial": len(candidates_list),
-                "candidates_after_sex_filter": len(filtered_candidates),
+                "candidates_initial": candidates_initial,
+                "candidates_after_sex_filter": candidates_after_sex,
                 "candidates_after_scoring": len(top_candidates),
             }
 
@@ -313,7 +309,8 @@ class FuzzySearchService:
             }
 
         except Exception as e:
-            print(f"Error in soft fuzzy search: {str(e)}")
+            if DEBUG:
+                print(f"Error in soft fuzzy search: {str(e)}")
             return {
                 "results": [],
                 "count": 0,

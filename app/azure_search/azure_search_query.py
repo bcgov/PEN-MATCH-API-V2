@@ -6,11 +6,30 @@ from typing import Dict, List, Any
 from config.settings import settings
 from .azure_search_fuzzy import FuzzySearchService
 
+# Only print debug logs when running this module directly (test mode)
+DEBUG = __name__ == "__main__"
+
 
 class StudentSearchService:
     def __init__(self):
         self.search_endpoint = "https://pen-match-api-v2-search.search.windows.net"
         self.index_name = "student-index"
+
+        # Fields we actually use in responses & comparisons
+        # (must all exist in the index schema)
+        self._select_fields = [
+            "student_id",
+            "pen",
+            "legalFirstName",
+            "legalMiddleNames",
+            "legalLastName",
+            "dob",
+            "sexCode",
+            "postalCode",
+            "mincode",
+            "gradeCode",
+            "localID",
+        ]
 
         # Azure identity
         self.credential = DefaultAzureCredential()
@@ -21,15 +40,17 @@ class StudentSearchService:
                 index_name=self.index_name,
                 credential=self.credential,
             )
-            print("Azure Search client initialized successfully")
-            
-            # Initialize fuzzy search service
+            if DEBUG:
+                print("Azure Search client initialized successfully")
+
+            # Initialize fuzzy search service (reused across calls)
             self.fuzzy_service = FuzzySearchService(
                 self.search_endpoint,
                 self.index_name,
-                self.credential
+                self.credential,
             )
         except Exception as e:
+            # Init failure is rare but important – keep this print
             print(f"Failed to initialize Azure Search client: {str(e)}")
             raise
 
@@ -43,19 +64,25 @@ class StudentSearchService:
         """
         try:
             t0 = time.perf_counter()
+            # Filter-only lookup, minimal fields, no total_count
             results = self.search_client.search(
-                search_text="*",
+                search_text="*",  # filter-only pattern
                 filter=f"pen eq '{pen}'",
                 top=2,  # we only need to know if it exists; 2 detects duplicates
-                include_total_count=True,
+                select=self._select_fields,
             )
             results_list = list(results)
             t1 = time.perf_counter()
             count = len(results_list)
-            print(f"[DEBUG] Search by PEN took {t1 - t0:.3f}s, found {count} row(s) for PEN={pen}")
+            if DEBUG:
+                print(
+                    f"[DEBUG] Search by PEN took {t1 - t0:.3f}s, "
+                    f"found {count} row(s) for PEN={pen}"
+                )
             return {"results": results_list, "count": count}
         except Exception as e:
-            print(f"Error in _search_by_pen: {str(e)}")
+            if DEBUG:
+                print(f"Error in _search_by_pen: {str(e)}")
             return {"results": [], "count": 0}
 
     # ------------------------------------------------------------------
@@ -94,7 +121,8 @@ class StudentSearchService:
             if rv is not None and str(rv).strip().upper() == str(qv).strip().upper():
                 match_count += 1
 
-        print(f"[DEBUG] Field match count: {match_count}/{total_fields}")
+        if DEBUG:
+            print(f"[DEBUG] Field match count: {match_count}/{total_fields}")
         return match_count, total_fields
 
     # ------------------------------------------------------------------
@@ -137,32 +165,45 @@ class StudentSearchService:
 
         filter_expression = " and ".join(filters) if filters else None
 
-        print(f"[DEBUG] Hard filter expression: {filter_expression}")
+        if DEBUG:
+            print(f"[DEBUG] Hard filter expression: {filter_expression}")
+
+        if not filter_expression:
+            # No filters → no point calling search (should not happen because
+            # StudentQuery always has first/last name, but keep safe)
+            return {"results": [], "count": 0}
 
         try:
             t0 = time.perf_counter()
             # top=41 so we can detect "more than 40" case
+            # NOTE: we don't need total_count, we only care about:
+            #   - 0
+            #   - 1
+            #   - 2–40
+            #   - >40 (we detect by 41st doc)
             results = self.search_client.search(
-                search_text="*",
+                search_text="*",           # filter-only pattern
                 filter=filter_expression,
                 top=41,
-                include_total_count=True,
+                select=self._select_fields,
             )
             results_list = list(results)
             t1 = time.perf_counter()
 
             count = len(results_list)
-            print(
-                f"[DEBUG] Exact search (hard filter) took {t1 - t0:.3f} seconds, "
-                f"returned {count} rows (top=41)"
-            )
+            if DEBUG:
+                print(
+                    f"[DEBUG] Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                    f"returned {count} rows (top=41)"
+                )
 
             return {
                 "results": results_list[:40],  # we only keep at most 40 to return
                 "count": count,
             }
         except Exception as e:
-            print(f"Error in hard filter search: {str(e)}")
+            if DEBUG:
+                print(f"Error in hard filter search: {str(e)}")
             return {"results": [], "count": 0}
 
     # ------------------------------------------------------------------
@@ -191,8 +232,9 @@ class StudentSearchService:
                * For now: top 20 fuzzy candidates, PenStatus = CM if any,
                  or C0 if fuzzy also returns 0.
         """
-        print("\n" + "=" * 80)
-        print("[DEBUG] Incoming query_data:", query_data)
+        if DEBUG:
+            print("\n" + "=" * 80)
+            print("[DEBUG] Incoming query_data:", query_data)
 
         pen = query_data.get("pen")
         pen_status = None
@@ -201,7 +243,8 @@ class StudentSearchService:
         # Case 1: PEN provided → check if PEN exists
         # ------------------------------------------------------------------
         if pen:
-            print(f"[DEBUG] PEN supplied in query: {pen}")
+            if DEBUG:
+                print(f"[DEBUG] PEN supplied in query: {pen}")
             pen_search = self._search_by_pen(pen)
             if pen_search["count"] > 0:
                 # PEN exists, compare fields
@@ -216,7 +259,11 @@ class StudentSearchService:
                 else:
                     pen_status = "F1"
 
-                print(f"[DEBUG] PEN lookup pen_status={pen_status}, count={pen_search['count']}")
+                if DEBUG:
+                    print(
+                        f"[DEBUG] PEN lookup pen_status={pen_status}, "
+                        f"count={pen_search['count']}"
+                    )
                 return {
                     "status": "success",
                     "pen_status": pen_status,
@@ -226,10 +273,15 @@ class StudentSearchService:
                 }
             else:
                 # PEN not found in index → treat as "pen not exist"
-                print(f"[DEBUG] PEN {pen} not found in index, falling back to demographic search.")
+                if DEBUG:
+                    print(
+                        f"[DEBUG] PEN {pen} not found in index, "
+                        f"falling back to demographic search."
+                    )
                 query_no_pen = {k: v for k, v in query_data.items() if k != "pen"}
         else:
-            print("[DEBUG] No PEN supplied, using demographic search only.")
+            if DEBUG:
+                print("[DEBUG] No PEN supplied, using demographic search only.")
             query_no_pen = dict(query_data)
 
         # ------------------------------------------------------------------
@@ -241,17 +293,22 @@ class StudentSearchService:
             hard = {"results": [], "count": 0}
 
         count_exact = hard["count"]
-        print(f"[DEBUG] Exact match candidate count={count_exact}")
+        if DEBUG:
+            print(f"[DEBUG] Exact match candidate count={count_exact}")
 
         # > 40 candidates → C0, ask for more info, no list returned
         if count_exact > 40:
             pen_status = "C0"
-            print(f"[DEBUG] pen_status={pen_status} (too many exact candidates)")
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (too many exact candidates)")
             return {
                 "status": "success",
                 "pen_status": pen_status,
                 "search_type": "exact_match",
-                "message": "Over 40 candidates found, please provide more specific information.",
+                "message": (
+                    "Over 40 candidates found, please provide more "
+                    "specific information."
+                ),
                 "results": [],
                 "count": count_exact,
             }
@@ -259,7 +316,8 @@ class StudentSearchService:
         # 1 candidate → D1
         if count_exact == 1:
             pen_status = "D1"
-            print(f"[DEBUG] pen_status={pen_status} (single exact candidate)")
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (single exact candidate)")
             return {
                 "status": "success",
                 "pen_status": pen_status,
@@ -271,7 +329,8 @@ class StudentSearchService:
         # 2–40 candidates → CM
         if 1 < count_exact <= 40:
             pen_status = "CM"
-            print(f"[DEBUG] pen_status={pen_status} (multiple exact candidates)")
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (multiple exact candidates)")
             return {
                 "status": "success",
                 "pen_status": pen_status,
@@ -283,15 +342,18 @@ class StudentSearchService:
         # ------------------------------------------------------------------
         # Case 3: No exact candidates → Fuzzy match
         # ------------------------------------------------------------------
-        print("[DEBUG] No exact candidates, running fuzzy search...")
+        if DEBUG:
+            print("[DEBUG] No exact candidates, running fuzzy search...")
         fuzzy = self.fuzzy_service.soft_fuzzy_search(query_no_pen)
         fuzzy_count = fuzzy.get("count", 0)
-        print(f"[DEBUG] Fuzzy match candidate count={fuzzy_count}")
+        if DEBUG:
+            print(f"[DEBUG] Fuzzy match candidate count={fuzzy_count}")
 
         if fuzzy_count == 0:
             # Even fuzzy couldn't find anything
             pen_status = "C0"
-            print(f"[DEBUG] pen_status={pen_status} (no fuzzy candidates)")
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (no fuzzy candidates)")
             return {
                 "status": "success",
                 "pen_status": pen_status,
@@ -303,7 +365,8 @@ class StudentSearchService:
 
         # For now: top 20 fuzzy candidates & pen_status = CM
         pen_status = "CM"
-        print(f"[DEBUG] pen_status={pen_status} (fuzzy candidates returned)")
+        if DEBUG:
+            print(f"[DEBUG] pen_status={pen_status} (fuzzy candidates returned)")
         return {
             "status": "success",
             "pen_status": pen_status,
@@ -315,13 +378,14 @@ class StudentSearchService:
 
 
 # ----------------------------------------------------------------------
-# Helper wrapper
+# Helper wrapper – reuse single service instance to avoid re-auth overhead
 # ----------------------------------------------------------------------
-
 student_search_service = StudentSearchService()
+
 
 def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
     return student_search_service.search_students(query_data)
+
 
 # ----------------------------------------------------------------------
 # Pretty printing of results (for debugging and tests)

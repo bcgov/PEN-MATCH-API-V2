@@ -13,13 +13,6 @@ RUN apt-get update && apt-get install -y \
 
 
 
-# Install Oracle Instant Client (current 23.26 basiclite)
-RUN curl -L -o instantclient-basiclite.zip \
-    https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
-    && unzip instantclient-basiclite.zip -d /opt/oracle \
-    && rm instantclient-basiclite.zip
-
-
 # Download + unzip
 RUN curl -L -o instantclient-basiclite.zip \
     https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \

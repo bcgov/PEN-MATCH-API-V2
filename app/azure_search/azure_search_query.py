@@ -317,10 +317,11 @@ class StudentSearchService:
 # ----------------------------------------------------------------------
 # Helper wrapper
 # ----------------------------------------------------------------------
-def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
-    service = StudentSearchService()
-    return service.search_students(query_data)
 
+student_search_service = StudentSearchService()
+
+def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
+    return student_search_service.search_students(query_data)
 
 # ----------------------------------------------------------------------
 # Pretty printing of results (for debugging and tests)

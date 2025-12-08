@@ -101,12 +101,12 @@ def get_pen_status_message(pen_status: str) -> Optional[str]:
     Returns None for certain status codes to match expected response format.
     """
     status_messages = {
-        "AA": "All provided fields match exactly",
-        "BM": "Multiple fields match but some differences found",
-        "F1": "Only one or zero fields match",
+        "AA": None,  # "All provided fields match exactly",
+        "BM": None,  # "Multiple fields match but some differences found",
+        "F1": None,  # "Only one or zero fields match",
         "D1": None,  # Single match - no message needed
         "CM": None,  # Multiple matches - no message needed  
-        "C0": "Too many candidates or no matches found"
+        "C0": None,  # "Too many candidates or no matches found"
     }
     return status_messages.get(pen_status, "Unknown status")
 

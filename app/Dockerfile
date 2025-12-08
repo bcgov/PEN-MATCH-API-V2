@@ -11,14 +11,32 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Oracle Instant Client (current 23.26 basiclite)
 
+
+# Install Oracle Instant Client (current 23.26 basiclite)
 RUN curl -L -o instantclient-basiclite.zip \
     https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
     && unzip instantclient-basiclite.zip -d /opt/oracle \
     && rm instantclient-basiclite.zip
 
+
+# Download + unzip
+RUN curl -L -o instantclient-basiclite.zip \
+    https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basiclite-linux.x64-23.26.0.0.0.zip \
+    && unzip instantclient-basiclite.zip -d /opt/oracle \
+    && rm instantclient-basiclite.zip \
+    && ln -s /opt/oracle/instantclient_* /opt/oracle/instantclient
+
+
+
+# Use a stable alias path
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient:${LD_LIBRARY_PATH}
+ENV ORACLE_HOME=/opt/oracle/instantclient
+# (optional, if you use tnsnames.ora)
+ENV TNS_ADMIN=/opt/oracle/instantclient/network/admin
+
     
+
 
 # Set Oracle environment variable
 ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_23_6
@@ -36,4 +54,4 @@ COPY . .
 EXPOSE 8000
 
 # Default production command (100% works on Azure App Service)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -150,7 +150,38 @@ def search_by_name(name, top=5):
         print(f"Error searching by name: {e}")
 
 # ---------------------------------------------------------------
-# 7. UPDATE DOCUMENT (MERGE / OVERWRITE)
+# 7. SEARCH BY PEN NUMBER
+# ---------------------------------------------------------------
+def search_pen(pen_number):
+    print(f"\n=== SEARCH BY PEN: {pen_number} ===")
+    try:
+        results = search_client.search(
+            search_text="*",
+            filter=f"pen eq '{pen_number}'",
+            top=10  # Should only be 1 result per PEN, but keep some buffer
+        )
+        
+        count = 0
+        for doc in results:
+            count += 1
+            print(f"Student {count} (PEN: {pen_number}):")
+            for key, value in doc.items():
+                if key == 'nameEmbedding':
+                    # Skip nameEmbedding as requested
+                    continue
+                print(f"  {key}: {value}")
+            print("--------------------------------------------------")
+            
+        if count == 0:
+            print(f"No student found with PEN: {pen_number}")
+        else:
+            print(f"Found {count} student(s) with PEN: {pen_number}")
+            
+    except Exception as e:
+        print(f"Error searching by PEN: {e}")
+
+# ---------------------------------------------------------------
+# 8. UPDATE DOCUMENT (MERGE / OVERWRITE)
 # ---------------------------------------------------------------
 def update_document(doc):
     print("\n=== UPDATING DOCUMENT ===")
@@ -162,22 +193,19 @@ def update_document(doc):
         print(f"Error updating document: {e}")
 
 # ---------------------------------------------------------------
-# 8. SEARCH SPECIFIC STUDENTS
-# ---------------------------------------------------------------
-def search_robyn_anderson():
-    print("\n=== SEARCHING FOR ROBYN ANDERSON ===")
-    search_by_name("ROBYN ANDERSON")
-
-# ---------------------------------------------------------------
 # RUN EVERYTHING
 # ---------------------------------------------------------------
 if __name__ == "__main__":
     try:
         print_index_schema()
         count_documents()
+        search_pen("")
         # print_sample_docs()
         # check_vector_length()
         # search_robyn_anderson()
+        
+        # Test with a specific PEN number
+        # search_pen("124809765")
         
         # Test with a specific document ID if you have one
         # get_by_id("some-student-id-here")

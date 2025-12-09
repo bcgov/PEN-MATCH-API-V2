@@ -130,12 +130,7 @@ class FuzzySearchService:
         return (value or "").replace("'", "''")
 
     def _dob_literal(self, dob_iso: str) -> str:
-        """
-        Turn 'YYYY-MM-DD' into a filter literal.
-        If dob is stored as Edm.String in the index, this is enough:
-          dob eq '2001-10-02'
-        (Kept for potential use; not used in prefix filters.)
-        """
+        """If you ever need exact DOB equality in filters."""
         return f"'{dob_iso}'"
 
     def _postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
@@ -232,6 +227,80 @@ class FuzzySearchService:
         if q_year == c_year:
             return 0.4
         return 0.0
+
+    # ------------------------------------------------------------------
+    # Helpers: prefix → range filters (because startswith is not allowed)
+    # ------------------------------------------------------------------
+    def _build_dob_month_range_filter(self, q_dob: str) -> Optional[str]:
+        """
+        Build a DOB month range:
+          dob in [YYYY-MM-01, YYYY-MM-32)
+        """
+        if not q_dob:
+            return None
+        dob_prefix = q_dob[:7]  # 'YYYY-MM'
+        start = f"{dob_prefix}-01"
+        end = f"{dob_prefix}-32"  # 32 is > any valid day, still < next month
+        start_esc = self._escape_filter_str(start)
+        end_esc = self._escape_filter_str(end)
+        return f"dob ge '{start_esc}' and dob lt '{end_esc}'"
+
+    def _build_mincode_prefix_range_filter(self, q_mincode: str) -> Optional[str]:
+        """
+        Build a MINCODE prefix range:
+          mincode in [prefix, prefix_high)
+        where prefix_high = prefix+1 in numeric space (with same length).
+        """
+        q_mincode = (q_mincode or "").strip()
+        if not q_mincode:
+            return None
+
+        # Use first 4 digits if possible, otherwise first 3
+        prefix_len = 4 if len(q_mincode) >= 4 else len(q_mincode)
+        if prefix_len < 3:
+            return None  # too broad
+
+        prefix = q_mincode[:prefix_len]
+        if not prefix.isdigit():
+            # Fallback: no fancy range if not all digits
+            prefix_esc = self._escape_filter_str(prefix)
+            return f"mincode ge '{prefix_esc}'"
+
+        prefix_int = int(prefix)
+        next_int = prefix_int + 1
+        prefix_high = str(next_int).zfill(prefix_len)
+
+        prefix_esc = self._escape_filter_str(prefix)
+        prefix_high_esc = self._escape_filter_str(prefix_high)
+        return f"mincode ge '{prefix_esc}' and mincode lt '{prefix_high_esc}'"
+
+    def _build_postal_fsa_range_filter(self, q_postal: str) -> Optional[str]:
+        """
+        Build a POSTAL FSA range based on first 3 chars:
+          postalCode in [FSA, FSA_next)
+        where FSA_next is the next last-letter (e.g. V8W → V8X).
+        If last char is 'Z', we just do ge FSA.
+        """
+        if not q_postal:
+            return None
+
+        fsa = q_postal.replace(" ", "").upper()[:3]
+        if not fsa:
+            return None
+
+        first_two = fsa[:2]
+        last_char = fsa[2]
+
+        if "A" <= last_char < "Z":
+            next_last = chr(ord(last_char) + 1)
+            fsa_high = first_two + next_last
+            fsa_esc = self._escape_filter_str(fsa)
+            fsa_high_esc = self._escape_filter_str(fsa_high)
+            return f"postalCode ge '{fsa_esc}' and postalCode lt '{fsa_high_esc}'"
+        else:
+            # If 'Z' or something unexpected, fallback to ge only
+            fsa_esc = self._escape_filter_str(fsa)
+            return f"postalCode ge '{fsa_esc}'"
 
     # ------------------------------------------------------------------
     # Single vector search call with optional filter
@@ -331,7 +400,7 @@ class FuzzySearchService:
         return ranked
 
     # ------------------------------------------------------------------
-    # New fuzzy search: sex filter + coarse DOB/MINCODE/POSTAL filters
+    # New fuzzy search: sex filter + coarse DOB/MINCODE/POSTAL filters (via ranges)
     # ------------------------------------------------------------------
     def soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -339,9 +408,9 @@ class FuzzySearchService:
         - Name embedding as main signal.
         - Optional global sex filter.
         - Three separate filtered vector searches:
-            * DOB prefix filter (year+month) + optional sex
-            * MINCODE prefix filter (first 3–4 digits) + optional sex
-            * POSTAL FSA filter (first 3 chars) + optional sex
+            * DOB month range filter + optional sex
+            * MINCODE prefix numeric range filter + optional sex
+            * POSTAL FSA range filter + optional sex
         - Union of candidates from those searches (deduped).
         - If all three are empty, fallback to:
             * sex-only filter, then
@@ -392,15 +461,14 @@ class FuzzySearchService:
         candidates_all: List[Dict[str, Any]] = []
         top_k_vector = 300  # large enough so name+field won't be cut off in most cases
 
-        # 3. DOB prefix filter (year+month) + optional sex
-        if q_dob:
-            # 'YYYY-MM'
-            dob_prefix = q_dob[:7]  # year+month
-            dob_expr = f"startswith(dob, '{self._escape_filter_str(dob_prefix)}')"
+        # 3. DOB month range filter + optional sex
+        dob_range_expr = self._build_dob_month_range_filter(q_dob)
+        if dob_range_expr:
+            dob_expr = dob_range_expr
             if sex_filter_expr:
                 dob_expr = f"{dob_expr} and {sex_filter_expr}"
 
-            filters_run.append(f"DOB_PREFIX filter: {dob_expr}")
+            filters_run.append(f"DOB_RANGE filter: {dob_expr}")
             dob_candidates = self._vector_search_once(
                 embedding=query_embedding,
                 filter_expr=dob_expr,
@@ -408,39 +476,35 @@ class FuzzySearchService:
             )
             candidates_all.extend(dob_candidates)
 
-        # 4. MINCODE prefix filter (first 3–4 digits) + optional sex
-        if q_mincode:
-            # Use first 4 digits if available, otherwise first 3.
-            min_prefix_len = 4 if len(q_mincode) >= 4 else len(q_mincode)
-            if min_prefix_len >= 3:  # avoid extremely broad filters
-                min_prefix = q_mincode[:min_prefix_len]
-                min_expr = f"startswith(mincode, '{self._escape_filter_str(min_prefix)}')"
-                if sex_filter_expr:
-                    min_expr = f"{min_expr} and {sex_filter_expr}"
+        # 4. MINCODE prefix numeric range filter + optional sex
+        min_range_expr = self._build_mincode_prefix_range_filter(q_mincode)
+        if min_range_expr:
+            min_expr = min_range_expr
+            if sex_filter_expr:
+                min_expr = f"{min_expr} and {sex_filter_expr}"
 
-                filters_run.append(f"MINCODE_PREFIX filter: {min_expr}")
-                min_candidates = self._vector_search_once(
-                    embedding=query_embedding,
-                    filter_expr=min_expr,
-                    top_k=top_k_vector,
-                )
-                candidates_all.extend(min_candidates)
+            filters_run.append(f"MINCODE_RANGE filter: {min_expr}")
+            min_candidates = self._vector_search_once(
+                embedding=query_embedding,
+                filter_expr=min_expr,
+                top_k=top_k_vector,
+            )
+            candidates_all.extend(min_candidates)
 
-        # 5. POSTAL FSA filter (first 3 chars) + optional sex
-        if q_postal:
-            fsa = q_postal.replace(" ", "").upper()[:3]
-            if fsa:
-                post_expr = f"startswith(postalCode, '{self._escape_filter_str(fsa)}')"
-                if sex_filter_expr:
-                    post_expr = f"{post_expr} and {sex_filter_expr}"
+        # 5. POSTAL FSA range filter + optional sex
+        post_range_expr = self._build_postal_fsa_range_filter(q_postal)
+        if post_range_expr:
+            post_expr = post_range_expr
+            if sex_filter_expr:
+                post_expr = f"{post_expr} and {sex_filter_expr}"
 
-                filters_run.append(f"POSTAL_FSA filter: {post_expr}")
-                post_candidates = self._vector_search_once(
-                    embedding=query_embedding,
-                    filter_expr=post_expr,
-                    top_k=top_k_vector,
-                )
-                candidates_all.extend(post_candidates)
+            filters_run.append(f"POSTAL_FSA_RANGE filter: {post_expr}")
+            post_candidates = self._vector_search_once(
+                embedding=query_embedding,
+                filter_expr=post_expr,
+                top_k=top_k_vector,
+            )
+            candidates_all.extend(post_candidates)
 
         # 6. If all three filtered lists are empty, use fallback(s)
         if not candidates_all:
@@ -509,7 +573,7 @@ class FuzzySearchService:
         top_candidates = ranked_candidates[:20]
 
         methodology = {
-            "search_method": "vector_only_with_sex_and_coarse_field_filters",
+            "search_method": "vector_only_with_sex_and_coarse_field_range_filters",
             "embedding_generated": query_embedding is not None,
             "filters_run": filters_run,
             "vector_top_k_per_filter": top_k_vector,

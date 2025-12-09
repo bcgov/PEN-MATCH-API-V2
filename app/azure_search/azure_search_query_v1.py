@@ -1,11 +1,13 @@
 from azure.search.documents import SearchClient
-from azure.search.documents.models import VectorizedQuery
 from azure.identity import DefaultAzureCredential
-from openai import AzureOpenAI
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 from config.settings import settings
+from .azure_search_fuzzy import FuzzySearchService
+
+# Only print debug logs when running this module directly (test mode)
+DEBUG = __name__ == "__main__"
 
 
 class StudentSearchService:
@@ -13,15 +15,24 @@ class StudentSearchService:
         self.search_endpoint = "https://pen-match-api-v2-search.search.windows.net"
         self.index_name = "student-index"
 
+        # Fields we actually use in responses & comparisons
+        # (must all exist in the index schema)
+        self._select_fields = [
+            "student_id",
+            "pen",
+            "legalFirstName",
+            "legalMiddleNames",
+            "legalLastName",
+            "dob",
+            "sexCode",
+            "postalCode",
+            "mincode",
+            "gradeCode",
+            "localID",
+        ]
+
         # Azure identity
         self.credential = DefaultAzureCredential()
-
-        # OpenAI embedding client
-        self.openai_client = AzureOpenAI(
-            api_key=settings.openai_api_key,
-            api_version="2023-05-15",
-            azure_endpoint=settings.openai_api_base_embedding
-        )
 
         try:
             self.search_client = SearchClient(
@@ -29,120 +40,90 @@ class StudentSearchService:
                 index_name=self.index_name,
                 credential=self.credential,
             )
-            print("Azure Search client initialized successfully")
+            if DEBUG:
+                print("Azure Search client initialized successfully")
+
+            # Initialize fuzzy search service (reused across calls)
+            self.fuzzy_service = FuzzySearchService(
+                self.search_endpoint,
+                self.index_name,
+                self.credential,
+            )
         except Exception as e:
+            # Init failure is rare but important – keep this print
             print(f"Failed to initialize Azure Search client: {str(e)}")
             raise
 
     # ------------------------------------------------------------------
-    # Embedding generation (USED ONLY IN FUZZY PATH)
+    # Helper: search by PEN only (to know if PEN exists)
     # ------------------------------------------------------------------
-    def generate_embedding(self, query_data: Dict[str, Any]) -> Optional[List[float]]:
-        """Generate embedding from full name using text-embedding-3-large."""
-        first = (query_data.get("legalFirstName") or "").strip()
-        last = (query_data.get("legalLastName") or "").strip()
-        middle = (query_data.get("legalMiddleNames") or "").strip()
-
-        # Normalize "NULL"
-        if first == "NULL":
-            first = ""
-        if last == "NULL":
-            last = ""
-        if middle == "NULL":
-            middle = ""
-
-        parts = [p for p in [first, middle, last] if p]
-        text = " ".join(parts) + "."
-
-        if text == ".":
-            # no name available → no embedding
-            return None
-
+    def _search_by_pen(self, pen: str) -> Dict[str, Any]:
+        """
+        Look up student(s) by PEN only.
+        We expect at most one record per PEN.
+        """
         try:
-            print(f"Generating embedding for: {text}")
             t0 = time.perf_counter()
-            resp = self.openai_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=text
+            # Filter-only lookup, minimal fields, no total_count
+            results = self.search_client.search(
+                search_text="*",  # filter-only pattern
+                filter=f"pen eq '{pen}'",
+                top=2,  # we only need to know if it exists; 2 detects duplicates
+                select=self._select_fields,
             )
+            results_list = list(results)
             t1 = time.perf_counter()
-            print(f"Embedding generation took {t1 - t0:.3f} seconds")
-            return resp.data[0].embedding
+            count = len(results_list)
+            if DEBUG:
+                print(
+                    f"[DEBUG] Search by PEN took {t1 - t0:.3f}s, "
+                    f"found {count} row(s) for PEN={pen}"
+                )
+            return {"results": results_list, "count": count}
         except Exception as e:
-            print(f"Error generating embedding for '{text}': {e}")
-            return None
+            if DEBUG:
+                print(f"Error in _search_by_pen: {str(e)}")
+            return {"results": [], "count": 0}
 
     # ------------------------------------------------------------------
-    # Similarity helpers (NO difflib)
+    # Helper: count how many fields match between query and a record
     # ------------------------------------------------------------------
-    def _postal_similarity(self, query_postal: str, candidate_postal: str) -> float:
+    @staticmethod
+    def _count_matching_fields(query_data: Dict[str, Any], record: Dict[str, Any]) -> (int, int):
         """
-        Simple, cheap similarity for Canadian postal codes:
-        - Exact normalized match → 1.0
-        - Same FSA (first 3 chars) → 0.7
-        - Same first 2 chars → 0.5
-        - Otherwise → 0.0
+        Count how many *provided* fields in query_data match the record.
+        Only fields present in query_data are considered.
+        Returns (match_count, total_fields_compared).
         """
-        if not query_postal or not candidate_postal:
-            return 0.0
+        compare_fields = [
+            "legalFirstName",
+            "legalMiddleNames",
+            "legalLastName",
+            "dob",
+            "sexCode",
+            "postalCode",
+            "mincode",
+            "gradeCode",
+            "localID",
+        ]
 
-        q = query_postal.replace(" ", "").upper()
-        c = candidate_postal.replace(" ", "").upper()
+        match_count = 0
+        total_fields = 0
 
-        if q == c:
-            return 1.0
+        for field in compare_fields:
+            qv = query_data.get(field)
+            if qv is None or qv == "":
+                continue  # not provided → we don't use it for comparison
 
-        # same FSA (first 3 chars)
-        if len(q) >= 3 and len(c) >= 3 and q[:3] == c[:3]:
-            return 0.7
+            rv = record.get(field)
+            total_fields += 1
 
-        # same first 2 chars (very rough, but better than 0)
-        if len(q) >= 2 and len(c) >= 2 and q[:2] == c[:2]:
-            return 0.5
+            if rv is not None and str(rv).strip().upper() == str(qv).strip().upper():
+                match_count += 1
 
-        return 0.0
-
-    def _mincode_similarity(self, query_mincode: str, candidate_mincode: str) -> float:
-        """
-        Simple numeric/string similarity for mincode:
-        - Exact match (after strip + leading-zero normalization) → 1.0
-        - Same first 4 chars → 0.8
-        - Same first 3 chars → 0.6
-        - Otherwise → 0.0
-        """
-        if not query_mincode or not candidate_mincode:
-            return 0.0
-
-        q = str(query_mincode).strip()
-        c = str(candidate_mincode).strip()
-
-        # normalize leading zeros
-        q_norm = q.lstrip("0")
-        c_norm = c.lstrip("0")
-
-        if q_norm == c_norm:
-            return 1.0
-
-        # prefix-based soft match
-        max_prefix = min(len(q_norm), len(c_norm))
-
-        if max_prefix >= 4 and q_norm[:4] == c_norm[:4]:
-            return 0.8
-        if max_prefix >= 3 and q_norm[:3] == c_norm[:3]:
-            return 0.6
-
-        return 0.0
-
-    def _sex_similarity(self, query_sex: str, candidate_sex: str) -> float:
-        if not query_sex or not candidate_sex:
-            return 0.0
-        return 1.0 if query_sex.upper() == candidate_sex.upper() else 0.0
-
-    def _dob_similarity(self, query_dob: str, candidate_dob: str) -> float:
-        if not query_dob or not candidate_dob:
-            return 0.0
-        # exact date string match (ISO yyyy-mm-dd)
-        return 1.0 if query_dob == candidate_dob else 0.0
+        if DEBUG:
+            print(f"[DEBUG] Field match count: {match_count}/{total_fields}")
+        return match_count, total_fields
 
     # ------------------------------------------------------------------
     # Hard filter search (exact matching with OData filter)
@@ -151,8 +132,7 @@ class StudentSearchService:
         """
         Perform strict hard filtering.
         If user gives multiple fields, we do AND between them.
-        This is where 'exact match' lives. If this returns >0, we never go to fuzzy.
-        (NO embedding is used in this path.)
+        This is where 'exact match' lives. If this returns >0, we don't go to fuzzy.
         """
         filters = []
 
@@ -185,259 +165,226 @@ class StudentSearchService:
 
         filter_expression = " and ".join(filters) if filters else None
 
+        if DEBUG:
+            print(f"[DEBUG] Hard filter expression: {filter_expression}")
+
+        if not filter_expression:
+            # No filters → no point calling search (should not happen because
+            # StudentQuery always has first/last name, but keep safe)
+            return {"results": [], "count": 0}
+
         try:
             t0 = time.perf_counter()
+            # top=41 so we can detect "more than 40" case
+            # NOTE: we don't need total_count, we only care about:
+            #   - 0
+            #   - 1
+            #   - 2–40
+            #   - >40 (we detect by 41st doc)
             results = self.search_client.search(
-                search_text="*",
+                search_text="*",           # filter-only pattern
                 filter=filter_expression,
-                top=101,  # fetch 101 to detect >100
-                include_total_count=True,
+                top=41,
+                select=self._select_fields,
             )
             results_list = list(results)
             t1 = time.perf_counter()
 
             count = len(results_list)
-            print(
-                f"Exact search (hard filter) took {t1 - t0:.3f} seconds, "
-                f"returned {count} rows"
-            )
+            if DEBUG:
+                print(
+                    f"[DEBUG] Exact search (hard filter) took {t1 - t0:.3f} seconds, "
+                    f"returned {count} rows (top=41)"
+                )
 
             return {
-                "results": results_list[:100],
+                "results": results_list[:40],  # we only keep at most 40 to return
                 "count": count,
             }
         except Exception as e:
-            print(f"Error in hard filter search: {str(e)}")
+            if DEBUG:
+                print(f"Error in hard filter search: {str(e)}")
             return {"results": [], "count": 0}
-
-    # ------------------------------------------------------------------
-    # Soft fuzzy search: vector-only on nameEmbedding (HNSW)
-    # Vector search keeps top 200 → soft scoring keeps top 20
-    # ------------------------------------------------------------------
-    def _soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Fuzzy search with:
-        - vector-only search on nameEmbedding (HNSW, keep top 200)
-        - NO text search on content or name fields
-        - metadata-based soft scoring (DOB, mincode, postal, sex)
-        - after scoring, keep final top 20
-
-        This runs ONLY if hard filter returned 0 results.
-        """
-        # 1. Build embedding from name (only entry for fuzzy)
-        query_embedding = self.generate_embedding(query_data)
-
-        if not query_embedding:
-            return {
-                "results": [],
-                "count": 0,
-                "methodology": {
-                    "reason": "No name embedding available for fuzzy search",
-                },
-            }
-
-        # 2. Build vector query (HNSW, approximate, top 200)
-        vector_queries: List[VectorizedQuery] = [
-            VectorizedQuery(
-                vector=query_embedding,
-                k_nearest_neighbors=200,   # 🔹 return top 200 neighbors from vector index
-                fields="nameEmbedding",
-                exhaustive=False           # use HNSW approximate search
-            )
-        ]
-
-        try:
-            # 3. Vector-only search (no text search_text, no search_fields)
-            t0 = time.perf_counter()
-            search_method = "vector_only"
-            results = self.search_client.search(
-                search_text="*",               # required param, but not used for ranking
-                vector_queries=vector_queries,
-                top=200,                       # 🔹 we pull top 200 docs back
-                include_total_count=False,     # faster, no total count
-            )
-            candidates_list = list(results)
-            t1 = time.perf_counter()
-            print(
-                f"Fuzzy Azure Search ({search_method}) took {t1 - t0:.3f} seconds "
-                # f"returned {len(candidates_list)} rows"
-            )
-
-            # 4. Soft filtering: ONLY by sex (if provided)
-            filtered_candidates = []
-            query_sex = (query_data.get("sexCode") or "").upper()
-
-            for cand in candidates_list:
-                cand_sex = (cand.get("sexCode") or "").upper()
-                # if user provided sex, candidate must match
-                if query_sex and cand_sex and cand_sex != query_sex:
-                    continue
-                filtered_candidates.append(cand)
-
-            # 5. Compute soft scores and final scores
-            scored_candidates = []
-            for cand in filtered_candidates:
-                base_score = cand.get("@search.score", 0.0)
-
-                dob_sim = self._dob_similarity(
-                    query_data.get("dob", ""),
-                    cand.get("dob", ""),
-                )
-                postal_sim = self._postal_similarity(
-                    query_data.get("postalCode", ""),
-                    cand.get("postalCode", ""),
-                )
-                mincode_sim = self._mincode_similarity(
-                    query_data.get("mincode", ""),
-                    cand.get("mincode", ""),
-                )
-                sex_sim = self._sex_similarity(
-                    query_data.get("sexCode", ""),
-                    cand.get("sexCode", ""),
-                )
-
-                # Default weights (importance order)
-                field_weights = {
-                    "dob": 0.4,
-                    "mincode": 0.3,
-                    "postal": 0.2,
-                    "sex": 0.1,
-                }
-
-                # Only use weights for fields actually provided in query
-                active_weights = {}
-                if query_data.get("dob"):
-                    active_weights["dob"] = field_weights["dob"]
-                if query_data.get("mincode"):
-                    active_weights["mincode"] = field_weights["mincode"]
-                if query_data.get("postalCode"):
-                    active_weights["postal"] = field_weights["postal"]
-                if query_data.get("sexCode"):
-                    active_weights["sex"] = field_weights["sex"]
-
-                total_weight = sum(active_weights.values())
-                soft_score = 0.0
-                if total_weight > 0:
-                    if "dob" in active_weights:
-                        soft_score += dob_sim * (active_weights["dob"] / total_weight)
-                    if "mincode" in active_weights:
-                        soft_score += mincode_sim * (active_weights["mincode"] / total_weight)
-                    if "postal" in active_weights:
-                        soft_score += postal_sim * (active_weights["postal"] / total_weight)
-                    if "sex" in active_weights:
-                        soft_score += sex_sim * (active_weights["sex"] / total_weight)
-
-                # If no extra fields provided, we rely purely on base score
-                if total_weight == 0:
-                    final_score = base_score
-                else:
-                    final_score = 0.3 * base_score + soft_score
-
-                cand["base_search_score"] = base_score
-                cand["soft_score"] = soft_score
-                cand["final_score"] = final_score
-                cand["search_method"] = search_method
-
-                scored_candidates.append(cand)
-
-            # 6. Sort by final score and keep top 20
-            scored_candidates.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
-            top_candidates = scored_candidates[:20]
-
-            # Debug print top 5
-            print(f"\n=== DEBUG: TOP 5 FUZZY SEARCH CANDIDATES ({search_method.upper()}) ===")
-            for i, cand in enumerate(top_candidates[:5], 1):
-                middle = cand.get("legalMiddleNames") or ""
-                print(
-                    f"{i}. {cand.get('legalFirstName', '')} {middle} {cand.get('legalLastName', '')}"
-                )
-                print(f"   Sex: {cand.get('sexCode', '')}, DOB: {cand.get('dob', '')}")
-                print(
-                    f"   Postal: {cand.get('postalCode', '')}, Mincode: {cand.get('mincode', '')}"
-                )
-                print(
-                    f"   Grade: {cand.get('gradeCode', '')}, Local ID: {cand.get('localID', '')}"
-                )
-                print(
-                    f"   Base Score: {cand.get('base_search_score', 0):.4f}, "
-                    f"Soft Score: {cand.get('soft_score', 0):.4f}, "
-                    f"Final Score: {cand.get('final_score', 0):.4f}"
-                )
-                print()
-
-            methodology = {
-                "step1": "Azure Search with vector-only HNSW on nameEmbedding (top 200)",
-                "step2": "Sex filter only (if provided)",
-                "step3": "Soft scoring on DOB, mincode, postal, sex with dynamic weights",
-                "step4": "Final ranking by 0.3 * base_score + soft_score (keep top 20)",
-                "search_method": search_method,
-                "embedding_generated": query_embedding is not None,
-                "candidates_initial": len(candidates_list),
-                "candidates_after_sex_filter": len(filtered_candidates),
-                "candidates_after_scoring": len(top_candidates),
-            }
-
-            return {
-                "results": top_candidates,
-                "count": len(top_candidates),
-                "methodology": methodology,
-            }
-
-        except Exception as e:
-            print(f"Error in soft fuzzy search: {str(e)}")
-            return {
-                "results": [],
-                "count": 0,
-                "methodology": {"error": str(e)},
-            }
 
     # ------------------------------------------------------------------
     # Public entrypoint
     # ------------------------------------------------------------------
     def search_students(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Main search pipeline:
-        1. Hard filter (exact). If 1–100 hits → return (NO embedding).
-           If >100 → error.
-        2. If 0 → soft fuzzy search with vector-only HNSW + soft score.
+        Main search pipeline with PenStatus:
+
+        1. If PEN is provided:
+           - Look up by PEN only.
+             * Every provided field matches → AA
+             * Multiple fields match but some wrong → BM
+             * Only one or zero fields match → F1
+           - If PEN not found → treat as 'pen not exist' and continue with
+             exact + fuzzy using other fields (pen removed).
+
+        2. If no PEN (or PEN not found):
+           Exact match (hard filter, no embedding):
+             * If 1 candidate     → D1
+             * If 2–40 candidates → CM
+             * If >40 candidates  → C0 (ask for more info, no list)
+
+           If 0 exact candidates:
+             Fuzzy match:
+               * For now: top 20 fuzzy candidates, PenStatus = CM if any,
+                 or C0 if fuzzy also returns 0.
         """
-        # STEP 1: hard filter (no embedding here)
-        hard = self._hard_filter_search(query_data)
+        if DEBUG:
+            print("\n" + "=" * 80)
+            print("[DEBUG] Incoming query_data:", query_data)
 
-        if hard["count"] > 100:
-            return {
-                "status": "error",
-                "message": "Over 100 candidates found, need more specific information",
-                "count": hard["count"],
-                "search_type": "exact_match",
-                "results": [],
-            }
+        pen = query_data.get("pen")
+        pen_status = None
 
-        if hard["count"] > 0:
+        # ------------------------------------------------------------------
+        # Case 1: PEN provided → check if PEN exists
+        # ------------------------------------------------------------------
+        if pen:
+            if DEBUG:
+                print(f"[DEBUG] PEN supplied in query: {pen}")
+            pen_search = self._search_by_pen(pen)
+            if pen_search["count"] > 0:
+                # PEN exists, compare fields
+                record = pen_search["results"][0]  # assume unique PEN
+                match_count, total_fields = self._count_matching_fields(query_data, record)
+
+                if total_fields == 0 or match_count == total_fields:
+                    # Only PEN given, or all provided fields match
+                    pen_status = "AA"
+                elif match_count >= 2:
+                    pen_status = "BM"
+                else:
+                    pen_status = "F1"
+
+                if DEBUG:
+                    print(
+                        f"[DEBUG] PEN lookup pen_status={pen_status}, "
+                        f"count={pen_search['count']}"
+                    )
+                return {
+                    "status": "success",
+                    "pen_status": pen_status,
+                    "search_type": "pen_lookup",
+                    "results": pen_search["results"],
+                    "count": pen_search["count"],
+                }
+            else:
+                # PEN not found in index → treat as "pen not exist"
+                if DEBUG:
+                    print(
+                        f"[DEBUG] PEN {pen} not found in index, "
+                        f"falling back to demographic search."
+                    )
+                query_no_pen = {k: v for k, v in query_data.items() if k != "pen"}
+        else:
+            if DEBUG:
+                print("[DEBUG] No PEN supplied, using demographic search only.")
+            query_no_pen = dict(query_data)
+
+        # ------------------------------------------------------------------
+        # Case 2: PEN not provided OR PEN not found → exact match path
+        # ------------------------------------------------------------------
+        if query_no_pen:
+            hard = self._hard_filter_search(query_no_pen)
+        else:
+            hard = {"results": [], "count": 0}
+
+        count_exact = hard["count"]
+        if DEBUG:
+            print(f"[DEBUG] Exact match candidate count={count_exact}")
+
+        # > 40 candidates → C0, ask for more info, no list returned
+        if count_exact > 40:
+            pen_status = "C0"
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (too many exact candidates)")
             return {
                 "status": "success",
-                "results": hard["results"],
-                "count": hard["count"],
+                "pen_status": pen_status,
                 "search_type": "exact_match",
+                "message": (
+                    "Over 40 candidates found, please provide more "
+                    "specific information."
+                ),
+                "results": [],
+                "count": count_exact,
             }
 
-        # STEP 2: soft fuzzy search
-        fuzzy = self._soft_fuzzy_search(query_data)
+        # 1 candidate → D1
+        if count_exact == 1:
+            pen_status = "D1"
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (single exact candidate)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "exact_match",
+                "results": hard["results"],
+                "count": count_exact,
+            }
+
+        # 2–40 candidates → CM
+        if 1 < count_exact <= 40:
+            pen_status = "CM"
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (multiple exact candidates)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "exact_match",
+                "results": hard["results"],
+                "count": count_exact,
+            }
+
+        # ------------------------------------------------------------------
+        # Case 3: No exact candidates → Fuzzy match
+        # ------------------------------------------------------------------
+        if DEBUG:
+            print("[DEBUG] No exact candidates, running fuzzy search...")
+        fuzzy = self.fuzzy_service.soft_fuzzy_search(query_no_pen)
+        fuzzy_count = fuzzy.get("count", 0)
+        if DEBUG:
+            print(f"[DEBUG] Fuzzy match candidate count={fuzzy_count}")
+
+        if fuzzy_count == 0:
+            # Even fuzzy couldn't find anything
+            pen_status = "C0"
+            if DEBUG:
+                print(f"[DEBUG] pen_status={pen_status} (no fuzzy candidates)")
+            return {
+                "status": "success",
+                "pen_status": pen_status,
+                "search_type": "fuzzy_match",
+                "results": [],
+                "count": 0,
+                "methodology": fuzzy.get("methodology", {}),
+            }
+
+        # For now: top 20 fuzzy candidates & pen_status = CM
+        pen_status = "CM"
+        if DEBUG:
+            print(f"[DEBUG] pen_status={pen_status} (fuzzy candidates returned)")
         return {
             "status": "success",
-            "results": fuzzy["results"],
-            "count": fuzzy["count"],
+            "pen_status": pen_status,
             "search_type": "fuzzy_match",
+            "results": fuzzy["results"],   # assume fuzzy already limits to top 20
+            "count": fuzzy["count"],
             "methodology": fuzzy.get("methodology", {}),
         }
 
 
 # ----------------------------------------------------------------------
-# Helper wrapper
+# Helper wrapper – reuse single service instance to avoid re-auth overhead
 # ----------------------------------------------------------------------
+student_search_service = StudentSearchService()
+
+
 def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
-    service = StudentSearchService()
-    return service.search_students(query_data)
+    return student_search_service.search_students(query_data)
 
 
 # ----------------------------------------------------------------------
@@ -446,14 +393,18 @@ def search_student_by_query(query_data: Dict[str, Any]) -> Dict[str, Any]:
 def print_search_results(result: Dict[str, Any], max_display: int = 5):
     print("\n=== SEARCH RESULTS ===")
     print(f"Status: {result.get('status')}")
+    print(f"Pen Status: {result.get('pen_status', 'N/A')}")
     print(f"Search Type: {result.get('search_type', '').upper()}")
-    # print(f"Total Count: {result.get('count', 0)}")
 
     if result.get("status") == "error":
         print(f"Error Message: {result.get('message')}")
         return
 
+    if "message" in result and result["message"]:
+        print(f"Message: {result['message']}")
+
     count = result.get("count", 0)
+    print(f"Total Count: {count}")
     if count == 0:
         print("No candidates found")
         return
@@ -465,10 +416,13 @@ def print_search_results(result: Dict[str, Any], max_display: int = 5):
         first = cand.get("legalFirstName", "") or ""
         middle = cand.get("legalMiddleNames", "") or ""
         last = cand.get("legalLastName", "") or ""
+        pen = cand.get("pen", "N/A")
+        student_id = cand.get("student_id", cand.get("studentId", "N/A"))
 
         full_name = " ".join(p for p in [first, middle, last] if p)
 
         print(f"\n{i}. {full_name}")
+        print(f"   PEN: {pen}, Student ID: {student_id}")
         print(f"   Sex: {cand.get('sexCode', 'N/A')}, DOB: {cand.get('dob', 'N/A')}")
         print(
             f"   Postal: {cand.get('postalCode', 'N/A')}, "
@@ -603,8 +557,7 @@ def run_test_suite():
         print(f"\nFuzzy Test {i}: {tc['name']}")
         print(f"Query: {tc['query']}")
         result = search_student_by_query(tc["query"])
-        # Uncomment if you want to see detailed fuzzy output
-        # print_search_results(result, max_display=5)
+        print_search_results(result, max_display=5)
 
 
 if __name__ == "__main__":

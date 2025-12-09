@@ -250,19 +250,30 @@ class FuzzySearchService:
         Build a MINCODE prefix range:
           mincode in [prefix, prefix_high)
         where prefix_high = prefix+1 in numeric space (with same length).
+
+        We prefer a 6-digit prefix if possible for better performance:
+        - If len >= 6 → use first 6 digits
+        - Else if len >= 4 → use first 4 digits
+        - Else if len >= 3 → use first 3 digits
+        - Else → no prefix filter (too broad)
         """
         q_mincode = (q_mincode or "").strip()
         if not q_mincode:
             return None
 
-        # Use first 4 digits if possible, otherwise first 3
-        prefix_len = 4 if len(q_mincode) >= 4 else len(q_mincode)
-        if prefix_len < 3:
-            return None  # too broad
+        # Prefer 6, then 4, then 3
+        if len(q_mincode) >= 6:
+            prefix_len = 6
+        elif len(q_mincode) >= 4:
+            prefix_len = 4
+        elif len(q_mincode) >= 3:
+            prefix_len = 3
+        else:
+            return None  # too short, skip special handling
 
         prefix = q_mincode[:prefix_len]
         if not prefix.isdigit():
-            # Fallback: no fancy range if not all digits
+            # Fallback: if not numeric, just use a >= prefix filter
             prefix_esc = self._escape_filter_str(prefix)
             return f"mincode ge '{prefix_esc}'"
 
@@ -273,6 +284,7 @@ class FuzzySearchService:
         prefix_esc = self._escape_filter_str(prefix)
         prefix_high_esc = self._escape_filter_str(prefix_high)
         return f"mincode ge '{prefix_esc}' and mincode lt '{prefix_high_esc}'"
+
 
     def _build_postal_fsa_range_filter(self, q_postal: str) -> Optional[str]:
         """
@@ -469,7 +481,7 @@ class FuzzySearchService:
 
         filters_run: List[str] = []
         candidates_all: List[Dict[str, Any]] = []
-        top_k_vector = 300  # large enough so name+field won't be cut off in most cases
+        top_k_vector = 150  # large enough so name+field won't be cut off in most cases
 
         # 3. DOB month range filter + optional sex
         dob_range_expr = self._build_dob_month_range_filter(q_dob)

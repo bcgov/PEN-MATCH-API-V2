@@ -90,7 +90,7 @@ class FuzzySearchService:
 
         try:
             if DEBUG:
-                print(f"Generating embedding for: {text}")
+                print(f"[DEBUG] Generating embedding for: {text}")
             t0 = time.perf_counter()
             resp = self.openai_client.embeddings.create(
                 model="text-embedding-ada-002",
@@ -98,11 +98,11 @@ class FuzzySearchService:
             )
             t1 = time.perf_counter()
             if DEBUG:
-                print(f"Embedding generation took {t1 - t0:.3f} seconds")
+                print(f"[DEBUG] Embedding generation took {t1 - t0:.3f} seconds")
             return resp.data[0].embedding
         except Exception as e:
             if DEBUG:
-                print(f"Error generating embedding for '{text}': {e}")
+                print(f"[DEBUG] Error generating embedding for '{text}': {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -337,8 +337,8 @@ class FuzzySearchService:
 
         if DEBUG:
             print(
-                f"Fuzzy Azure Search (filter={filter_expr}) took {t1 - t0:.3f} seconds, "
-                f"candidates={len(results)}"
+                f"[DEBUG] Fuzzy Azure Search (filter={filter_expr}) took "
+                f"{t1 - t0:.3f} seconds, candidates={len(results)}"
             )
 
         return results
@@ -393,6 +393,7 @@ class FuzzySearchService:
             cand["postal_sim"] = postal_sim
             cand["sex_sim"] = sex_sim
             cand["final_score"] = final_score
+            cand["search_method"] = "fuzzy_vector_range"
 
             ranked.append(cand)
 
@@ -400,7 +401,7 @@ class FuzzySearchService:
         return ranked
 
     # ------------------------------------------------------------------
-    # New fuzzy search: sex filter + coarse DOB/MINCODE/POSTAL filters (via ranges)
+    # Fuzzy search with timing debug
     # ------------------------------------------------------------------
     def soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -423,14 +424,23 @@ class FuzzySearchService:
           even if the last character of each field is wrong.
         """
 
+        t0_fuzzy = time.perf_counter()
+
         # 1. Build embedding from name
         query_embedding = self.generate_embedding(query_data)
         if not query_embedding:
+            t1_fuzzy = time.perf_counter()
+            if DEBUG:
+                print(
+                    f"[DEBUG] soft_fuzzy_search early-exit: no embedding, "
+                    f"total {t1_fuzzy - t0_fuzzy:.3f}s"
+                )
             return {
                 "results": [],
                 "count": 0,
                 "methodology": {
                     "reason": "No name embedding available for fuzzy search",
+                    "total_time_seconds": t1_fuzzy - t0_fuzzy,
                 },
             }
 
@@ -529,13 +539,19 @@ class FuzzySearchService:
                 candidates_all.extend(nofilter_candidates)
 
         if not candidates_all:
-            # truly nothing found
+            t1_fuzzy = time.perf_counter()
+            if DEBUG:
+                print(
+                    f"[DEBUG] soft_fuzzy_search: no candidates found, "
+                    f"total {t1_fuzzy - t0_fuzzy:.3f}s"
+                )
             return {
                 "results": [],
                 "count": 0,
                 "methodology": {
                     "reason": "No candidates found from all filters and fallbacks",
                     "filters_run": filters_run,
+                    "total_time_seconds": t1_fuzzy - t0_fuzzy,
                 },
             }
 
@@ -572,6 +588,18 @@ class FuzzySearchService:
 
         top_candidates = ranked_candidates[:20]
 
+        t1_fuzzy = time.perf_counter()
+        total_time = t1_fuzzy - t0_fuzzy
+
+        if DEBUG:
+            print(
+                "[DEBUG] soft_fuzzy_search total took "
+                f"{total_time:.3f}s "
+                f"(before_dedup={len(candidates_all)}, "
+                f"after_dedup={len(unique_candidates)}, "
+                f"returned={len(top_candidates)})"
+            )
+
         methodology = {
             "search_method": "vector_only_with_sex_and_coarse_field_range_filters",
             "embedding_generated": query_embedding is not None,
@@ -580,6 +608,7 @@ class FuzzySearchService:
             "candidates_before_dedup": len(candidates_all),
             "candidates_after_dedup": len(unique_candidates),
             "candidates_returned": len(top_candidates),
+            "total_time_seconds": total_time,
         }
 
         return {

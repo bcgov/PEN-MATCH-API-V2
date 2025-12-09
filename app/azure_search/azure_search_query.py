@@ -344,10 +344,18 @@ class StudentSearchService:
         # ------------------------------------------------------------------
         if DEBUG:
             print("[DEBUG] No exact candidates, running fuzzy search...")
+
+        t0_fuzzy = time.perf_counter()
         fuzzy = self.fuzzy_service.soft_fuzzy_search(query_no_pen)
+        t1_fuzzy = time.perf_counter()
+
         fuzzy_count = fuzzy.get("count", 0)
         if DEBUG:
-            print(f"[DEBUG] Fuzzy match candidate count={fuzzy_count}")
+            print(
+                f"[DEBUG] Fuzzy match candidate count={fuzzy_count}, "
+                f"soft_fuzzy_search total={t1_fuzzy - t0_fuzzy:.3f}s"
+            )
+
 
         if fuzzy_count == 0:
             # Even fuzzy couldn't find anything

@@ -285,12 +285,11 @@ class FuzzySearchService:
         prefix_high_esc = self._escape_filter_str(prefix_high)
         return f"mincode ge '{prefix_esc}' and mincode lt '{prefix_high_esc}'"
 
-
     def _build_postal_fsa_range_filter(self, q_postal: str) -> Optional[str]:
         """
         Build a POSTAL FSA range based on first 3 chars:
           postalCode in [FSA, FSA_next)
-        where FSA_next is the next last-letter (e.g. V8W → V8X).
+        where FSA_next is the next last-letter (e.g. V3N → V3O).
         If last char is 'Z', we just do ge FSA.
         """
         if not q_postal:
@@ -356,7 +355,7 @@ class FuzzySearchService:
         return results
 
     # ------------------------------------------------------------------
-    # Light scoring for final union of candidates
+    # Light scoring for final candidates
     # ------------------------------------------------------------------
     def _rank_with_light_scoring(
         self,
@@ -405,7 +404,7 @@ class FuzzySearchService:
             cand["postal_sim"] = postal_sim
             cand["sex_sim"] = sex_sim
             cand["final_score"] = final_score
-            cand["search_method"] = "fuzzy_vector_range"
+            cand["search_method"] = "fuzzy_vector_or_ranges"
 
             ranked.append(cand)
 
@@ -413,27 +412,28 @@ class FuzzySearchService:
         return ranked
 
     # ------------------------------------------------------------------
-    # Fuzzy search with timing debug
+    # Fuzzy search with single vector call + OR-range filter
     # ------------------------------------------------------------------
     def soft_fuzzy_search(self, query_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Fuzzy search with:
         - Name embedding as main signal.
-        - Optional global sex filter.
-        - Three separate filtered vector searches:
-            * DOB month range filter + optional sex
-            * MINCODE prefix numeric range filter + optional sex
-            * POSTAL FSA range filter + optional sex
-        - Union of candidates from those searches (deduped).
-        - If all three are empty, fallback to:
-            * sex-only filter, then
-            * no filter.
-        - Final ranking = name embedding score + DOB/MINCODE/POSTAL/sex boosts.
+        - Optional sex filter.
+        - Single vector search with one filter expression like:
 
-        Goal:
-          last name + first name + ANY “almost correct” extra field
-          (dob, mincode, postal) should surface the right PEN,
-          even if the last character of each field is wrong.
+            sexCode eq 'M' and (
+                (dob ge 'YYYY-MM-01' and dob lt 'YYYY-MM-32')
+                or (mincode ge 'xxxxxx' and mincode lt 'xxxxxy')
+                or (postalCode ge 'ABC' and postalCode lt 'ABD')
+            )
+
+          (Only clauses for fields actually provided are included.)
+
+        - If that returns 0 candidates:
+            1) fallback to sex-only filter (if sex exists),
+            2) then fallback to no filter.
+
+        - Final ranking = name embedding score + DOB/MINCODE/POSTAL/sex boosts.
         """
 
         t0_fuzzy = time.perf_counter()
@@ -456,12 +456,13 @@ class FuzzySearchService:
                 },
             }
 
-        # 2. Normalize query fields
-        q_dob = self._normalize_query_dob(
+        # 2. Normalize fields
+        raw_dob = (
             query_data.get("dob")
             or query_data.get("birthDate")
             or ""
         )
+        q_dob = self._normalize_query_dob(raw_dob)
         q_mincode = (query_data.get("mincode") or "").strip()
         q_postal = (
             query_data.get("postalCode")
@@ -474,83 +475,76 @@ class FuzzySearchService:
             or ""
         ).upper()
 
-        # Sex filter (optional)
-        sex_filter_expr = None
-        if q_sex:
-            sex_filter_expr = f"sexCode eq '{self._escape_filter_str(q_sex)}'"
-
-        filters_run: List[str] = []
-        candidates_all: List[Dict[str, Any]] = []
-        top_k_vector = 150  # large enough so name+field won't be cut off in most cases
-
-        # 3. DOB month range filter + optional sex
+        # 3. Build range expressions for existing fields
         dob_range_expr = self._build_dob_month_range_filter(q_dob)
-        if dob_range_expr:
-            dob_expr = dob_range_expr
-            if sex_filter_expr:
-                dob_expr = f"{dob_expr} and {sex_filter_expr}"
-
-            filters_run.append(f"DOB_RANGE filter: {dob_expr}")
-            dob_candidates = self._vector_search_once(
-                embedding=query_embedding,
-                filter_expr=dob_expr,
-                top_k=top_k_vector,
-            )
-            candidates_all.extend(dob_candidates)
-
-        # 4. MINCODE prefix numeric range filter + optional sex
         min_range_expr = self._build_mincode_prefix_range_filter(q_mincode)
-        if min_range_expr:
-            min_expr = min_range_expr
-            if sex_filter_expr:
-                min_expr = f"{min_expr} and {sex_filter_expr}"
-
-            filters_run.append(f"MINCODE_RANGE filter: {min_expr}")
-            min_candidates = self._vector_search_once(
-                embedding=query_embedding,
-                filter_expr=min_expr,
-                top_k=top_k_vector,
-            )
-            candidates_all.extend(min_candidates)
-
-        # 5. POSTAL FSA range filter + optional sex
         post_range_expr = self._build_postal_fsa_range_filter(q_postal)
-        if post_range_expr:
-            post_expr = post_range_expr
-            if sex_filter_expr:
-                post_expr = f"{post_expr} and {sex_filter_expr}"
 
-            filters_run.append(f"POSTAL_FSA_RANGE filter: {post_expr}")
-            post_candidates = self._vector_search_once(
+        or_clauses: List[str] = []
+        if dob_range_expr:
+            or_clauses.append(f"({dob_range_expr})")
+        if min_range_expr:
+            or_clauses.append(f"({min_range_expr})")
+        if post_range_expr:
+            or_clauses.append(f"({post_range_expr})")
+
+        used_buckets = bool(or_clauses)
+
+        # 4. Build single filter expression (OR across ranges, AND with sex)
+        filter_expr = None
+        filters_run: List[str] = []
+
+        if or_clauses:
+            or_block = " or ".join(or_clauses)
+            if q_sex:
+                filter_expr = (
+                    f"sexCode eq '{self._escape_filter_str(q_sex)}' "
+                    f"and ({or_block})"
+                )
+            else:
+                filter_expr = f"({or_block})"
+        else:
+            # No range buckets, maybe only sex
+            if q_sex:
+                filter_expr = f"sexCode eq '{self._escape_filter_str(q_sex)}'"
+            else:
+                filter_expr = None
+
+        if filter_expr:
+            filters_run.append(f"OR-RANGE filter: {filter_expr}")
+        else:
+            filters_run.append("NO filter (no dob/mincode/postal/sex)")
+
+        top_k_vector = 150  # single vector call, enough for final top-20
+
+        # 5. Main vector search with combined filter
+        candidates = self._vector_search_once(
+            embedding=query_embedding,
+            filter_expr=filter_expr,
+            top_k=top_k_vector,
+        )
+
+        # 6. Fallbacks if no candidates
+        #    - if we used buckets + sex → fallback to sex-only
+        #    - then final fallback to no-filter
+        if not candidates and used_buckets and q_sex:
+            sex_only_filter = f"sexCode eq '{self._escape_filter_str(q_sex)}'"
+            filters_run.append(f"SEX-ONLY fallback: {sex_only_filter}")
+            candidates = self._vector_search_once(
                 embedding=query_embedding,
-                filter_expr=post_expr,
+                filter_expr=sex_only_filter,
                 top_k=top_k_vector,
             )
-            candidates_all.extend(post_candidates)
 
-        # 6. If all three filtered lists are empty, use fallback(s)
-        if not candidates_all:
-            # sex-only fallback
-            if sex_filter_expr:
-                filters_run.append(f"SEX-ONLY filter: {sex_filter_expr}")
-                sex_candidates = self._vector_search_once(
-                    embedding=query_embedding,
-                    filter_expr=sex_filter_expr,
-                    top_k=top_k_vector,
-                )
-                candidates_all.extend(sex_candidates)
+        if not candidates and filter_expr is not None:
+            filters_run.append("NO-FILTER final fallback")
+            candidates = self._vector_search_once(
+                embedding=query_embedding,
+                filter_expr=None,
+                top_k=top_k_vector,
+            )
 
-            # final fallback: no filter
-            if not candidates_all:
-                filters_run.append("NO filter")
-                nofilter_candidates = self._vector_search_once(
-                    embedding=query_embedding,
-                    filter_expr=None,
-                    top_k=top_k_vector,
-                )
-                candidates_all.extend(nofilter_candidates)
-
-        if not candidates_all:
+        if not candidates:
             t1_fuzzy = time.perf_counter()
             if DEBUG:
                 print(
@@ -561,41 +555,19 @@ class FuzzySearchService:
                 "results": [],
                 "count": 0,
                 "methodology": {
-                    "reason": "No candidates found from all filters and fallbacks",
+                    "reason": "No candidates found from OR-range/sex filter and fallbacks",
                     "filters_run": filters_run,
                     "total_time_seconds": t1_fuzzy - t0_fuzzy,
                 },
             }
 
-        # 7. Deduplicate by student_id (preferred) or pen
-        combined: Dict[str, Dict[str, Any]] = {}
-        for cand in candidates_all:
-            sid = cand.get("student_id") or cand.get("pen")
-            if not sid:
-                # fallback key if absolutely needed
-                sid = cand.get("@search.documentKey") or str(id(cand))
-
-            base_score = cand.get("@search.score", 0.0)
-            existing = combined.get(sid)
-
-            if not existing:
-                cand["@search.score"] = base_score
-                combined[sid] = cand
-            else:
-                # keep the candidate with the highest base (embedding) score
-                if base_score > existing.get("@search.score", 0.0):
-                    cand["@search.score"] = base_score
-                    combined[sid] = cand
-
-        unique_candidates = list(combined.values())
-
-        # 8. Final ranking (name embedding + DOB/MINCODE/POSTAL/sex boosts)
+        # 7. Final ranking (single candidate set, no dedup needed)
         ranked_candidates = self._rank_with_light_scoring(
             query_dob=q_dob,
             query_mincode=q_mincode,
             query_postal=q_postal,
             query_sex=q_sex,
-            candidates=unique_candidates,
+            candidates=candidates,
         )
 
         top_candidates = ranked_candidates[:20]
@@ -607,18 +579,15 @@ class FuzzySearchService:
             print(
                 "[DEBUG] soft_fuzzy_search total took "
                 f"{total_time:.3f}s "
-                f"(before_dedup={len(candidates_all)}, "
-                f"after_dedup={len(unique_candidates)}, "
-                f"returned={len(top_candidates)})"
+                f"(candidates={len(candidates)}, returned={len(top_candidates)})"
             )
 
         methodology = {
-            "search_method": "vector_only_with_sex_and_coarse_field_range_filters",
+            "search_method": "vector_only_with_or_range_filter",
             "embedding_generated": query_embedding is not None,
             "filters_run": filters_run,
-            "vector_top_k_per_filter": top_k_vector,
-            "candidates_before_dedup": len(candidates_all),
-            "candidates_after_dedup": len(unique_candidates),
+            "vector_top_k": top_k_vector,
+            "candidates_before_ranking": len(candidates),
             "candidates_returned": len(top_candidates),
             "total_time_seconds": total_time,
         }

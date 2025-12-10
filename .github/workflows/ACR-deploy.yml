@@ -3,6 +3,11 @@ name: Build & Push to ACR & Restart App
 on:
   workflow_dispatch:
 
+
+permissions:
+  id-token: write
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest

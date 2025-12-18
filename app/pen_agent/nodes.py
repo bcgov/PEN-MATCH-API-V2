@@ -1,7 +1,8 @@
 from typing import Dict, Any
+import json
 from azure_search.azure_search_query import search_student_by_query
 from .schemas import CandidateAnalysis
-from .prompt import ANALYZE_CANDIDATES_PROMPT
+from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from .llm_client import LLMClient
 
 def fetch_candidates_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -125,17 +126,20 @@ def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, 
     
     print(f"DEBUG: Prepared {len(processed_candidates)} candidates for LLM analysis")
     
-    # Format the prompt
-    prompt = ANALYZE_CANDIDATES_PROMPT.format(
-        request=request,
-        candidates=processed_candidates
+    # Format the user prompt with JSON data as specified in the new prompt template
+    user_prompt = USER_PROMPT_TEMPLATE.format(
+        request_json=json.dumps(request, indent=2),
+        candidates_json=json.dumps(processed_candidates, indent=2)
     )
     
-    print(f"DEBUG: Sending prompt to LLM (length: {len(prompt)} chars)")
+    print(f"DEBUG: Sending prompt to LLM (user prompt length: {len(user_prompt)} chars)")
     
     try:
-        # Use structured output to ensure proper response format
-        result = llm_client.with_structured_output(CandidateAnalysis).invoke(prompt)
+        # Use structured output with system prompt to ensure proper response format
+        result = llm_client.with_structured_output_and_system(CandidateAnalysis).invoke(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=user_prompt
+        )
         
         print(f"DEBUG: LLM returned decision: {result.decision} with confidence: {result.confidence}")
         

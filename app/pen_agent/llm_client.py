@@ -77,6 +77,56 @@ class LLMClient:
         
         return type('StructuredOutput', (), {'invoke': invoke})()
     
+    def with_structured_output_and_system(self, schema_class: Type[BaseModel]):
+        """Create structured output handler with system prompt support for Pydantic schemas using LangChain"""
+        def invoke(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> BaseModel:
+            try:
+                # Create a chain for structured output with system prompt
+                parser = JsonOutputParser(pydantic_object=schema_class)
+                
+                # Create prompt template with system and user messages + format instructions
+                prompt_template = ChatPromptTemplate.from_messages([
+                    SystemMessagePromptTemplate.from_template(system_prompt),
+                    HumanMessagePromptTemplate.from_template(
+                        "{user_prompt}\n\n{format_instructions}"
+                    )
+                ])
+                
+                # Use appropriate LLM based on temperature
+                llm = self.creative_llm if temperature > 0.5 else self.analytical_llm
+                llm.temperature = temperature
+                
+                # Create the chain
+                chain = (
+                    {
+                        "user_prompt": RunnablePassthrough(),
+                        "format_instructions": lambda x: parser.get_format_instructions()
+                    }
+                    | prompt_template
+                    | llm
+                    | parser
+                )
+                
+                # Invoke the chain
+                result = chain.invoke(user_prompt)
+                
+                # Convert to Pydantic model if needed
+                if isinstance(result, dict):
+                    return schema_class(**result)
+                return result
+                
+            except Exception as e:
+                print(f"Error in LangChain LLM call with system prompt: {e}")
+                # Return default "no match" response on error
+                return schema_class(
+                    decision="NO_MATCH",
+                    confidence=0.0,
+                    reasons=[f"LLM analysis failed: {str(e)}"],
+                    mismatches={}
+                )
+        
+        return type('StructuredOutputWithSystem', (), {'invoke': invoke})()
+    
     def generate_text(self, prompt: str, temperature: float = 0.7, max_tokens: Optional[int] = None) -> str:
         """Simple text generation using LangChain"""
         try:

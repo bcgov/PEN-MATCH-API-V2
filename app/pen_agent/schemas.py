@@ -7,32 +7,42 @@ from pydantic.config import ConfigDict
 
 Decision = Literal["CONFIRM", "REVIEW", "NO_MATCH"]
 Severity = Literal["high", "medium", "low"]
-Plausibility = Literal["plausible", "unlikely"]
+IssueType = Literal["typo", "outdated", "missing", "conflict", "formatting"]
+
+
+class KeyValue(BaseModel):
+    """Safe replacement for Dict[str, Any] in strict structured output."""
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: Optional[str] = None
 
 
 class Mismatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: str = Field(..., description="Field name that conflicts or is uncertain.")
-    detail: str = Field(..., description="Short explanation of the issue.")
+
+    field: str
+    detail: str
     severity: Severity = "medium"
 
 
 class SuspectedInputIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: str = Field(..., description="Which request field likely has an issue.")
-    issue: Literal["typo", "outdated", "missing", "conflict", "formatting"]
+
+    field: str
+    issue: IssueType
     hint: str
 
 
 class CandidateRecord(BaseModel):
     """
-    Candidate record that the LLM is allowed to echo back.
-    Keep this aligned with what you pass into candidates_json.
+    Candidate record that LLM can echo back.
+    Core fields + extras (stringified) to support "all fields information".
     """
     model_config = ConfigDict(extra="forbid")
 
+    # core identifiers
     student_id: str
-
     pen: Optional[str] = None
     legalFirstName: Optional[str] = None
     legalMiddleNames: Optional[str] = None
@@ -44,18 +54,20 @@ class CandidateRecord(BaseModel):
     localID: Optional[str] = None
     gradeCode: Optional[str] = None
 
-    # Optional debug scores (if you pass them)
+    # optional scoring/debug
     search_score: Optional[float] = None
     final_score: Optional[float] = None
     search_method: Optional[str] = None
 
+    # any remaining fields from search, as strings
+    extras: List[KeyValue] = Field(default_factory=list)
 
-class RankedCandidate(BaseModel):
+
+class ReviewCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     candidate: CandidateRecord
-    plausibility: Plausibility
-    summary: str = Field(..., description="One-line summary why plausible/unlikely.")
+    reasons: List[str] = Field(default_factory=list)
     issues: List[Mismatch] = Field(default_factory=list)
 
 
@@ -66,14 +78,14 @@ class CandidateAnalysis(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     reasons: List[str] = Field(default_factory=list)
 
-    # If CONFIRM, return the full chosen record including pen
+    # CONFIRM: filled; otherwise null
     chosen_candidate: Optional[CandidateRecord] = None
 
-    # General mismatches/uncertainties for the best candidate(s)
+    # top blockers / mistakes (keep this for the structure you like)
     mismatches: List[Mismatch] = Field(default_factory=list)
 
-    # If REVIEW, return up to 5 plausible/unlikely candidates with issues
-    ranked_candidates: List[RankedCandidate] = Field(default_factory=list)
+    # REVIEW: default top 5 plausible candidates (can include "unlikely" if needed, but keep list reasonable)
+    review_candidates: List[ReviewCandidate] = Field(default_factory=list)
 
-    # If NO_MATCH or weak REVIEW: which request fields to re-check
+    # NO_MATCH: suggested fields to re-check
     suspected_input_issues: List[SuspectedInputIssue] = Field(default_factory=list)

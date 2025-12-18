@@ -8,8 +8,7 @@ from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from .llm_client import LLMClient
 
 
-# Only pass fields that your schema allows (prevents token bloat + validation issues)
-ALLOWED_CANDIDATE_FIELDS = {
+CORE_FIELDS = {
     "student_id", "pen",
     "legalFirstName", "legalMiddleNames", "legalLastName",
     "dob", "sexCode", "mincode", "postalCode",
@@ -17,25 +16,52 @@ ALLOWED_CANDIDATE_FIELDS = {
     "@search.score", "final_score", "search_method",
 }
 
+# rename mapping for safe output keys
+RENAME_MAP = {
+    "@search.score": "search_score",
+}
 
-def slim_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+
+def to_candidate_payload(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Keep only safe/relevant fields for LLM analysis, and rename @search.score -> search_score.
+    Convert the raw Azure Search candidate dict into:
+    - core fields (schema-defined)
+    - extras: list of {key, value} for everything else (stringified)
+    Removes embedding/vector fields.
     """
     out: Dict[str, Any] = {}
-    for k in ALLOWED_CANDIDATE_FIELDS:
-        if k in candidate and candidate[k] is not None:
-            if k == "@search.score":
-                out["search_score"] = candidate[k]
+    extras: List[Dict[str, Any]] = []
+
+    for k, v in candidate.items():
+        lk = k.lower()
+        if lk.endswith("embedding") or lk.endswith("vector"):
+            continue
+
+        # normalize key name
+        key_out = RENAME_MAP.get(k, k)
+
+        if k in CORE_FIELDS:
+            out[key_out] = v
+        else:
+            # stringified extras (safe; no Dict[str,Any] in schema)
+            if v is None:
+                extras.append({"key": k, "value": None})
             else:
-                out[k] = candidate[k]
+                # keep simple strings, otherwise json-dump for readability
+                if isinstance(v, (str, int, float, bool)):
+                    extras.append({"key": k, "value": str(v)})
+                else:
+                    extras.append({"key": k, "value": json.dumps(v, ensure_ascii=False)})
+
+    # ensure required fields
+    if "student_id" not in out:
+        out["student_id"] = str(candidate.get("student_id", ""))
+
+    out["extras"] = extras
     return out
 
 
 def fetch_candidates_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Fetch candidates using Azure Search based on the request data
-    """
     request = state["request"]
 
     try:
@@ -44,7 +70,6 @@ def fetch_candidates_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         print(f"DEBUG: Found {len(candidates)} candidates from Azure Search")
 
-        # Debug print candidate information (excluding embeddings/vectors)
         for i, c in enumerate(candidates, 1):
             debug_candidate = {
                 k: v for k, v in c.items()
@@ -80,16 +105,12 @@ def fetch_candidates_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def decision_router_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Router to decide if LLM analysis is needed based on candidate count
-    """
     candidates = state["candidates"]
     candidate_count = len(candidates)
 
     print(f"DEBUG: Decision router - found {candidate_count} candidates")
 
     if candidate_count == 0:
-        print("DEBUG: No candidates found - returning NO_MATCH")
         return {
             "final_decision": "NO_MATCH",
             "selected_candidate": None,
@@ -101,54 +122,45 @@ def decision_router_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "reasons": ["No candidates found in search"],
                 "chosen_candidate": None,
                 "mismatches": [],
-                "ranked_candidates": [],
-                "suspected_input_issues": [{"field": "unknown", "issue": "missing", "hint": "No candidates returned; check core identifiers (name, DOB, pen)."}],
+                "review_candidates": [],
+                "suspected_input_issues": [
+                    {"field": "unknown", "issue": "missing", "hint": "No candidates returned; re-check name/DOB/pen/mincode/postal."}
+                ],
             },
             "route": "end",
         }
 
-    # Optional: you can still keep auto-confirm for 1 candidate,
-    # but you asked: "if one match: return full info (with pen)" -> do it here.
     if candidate_count == 1:
-        print("DEBUG: Single candidate found - auto-confirming without LLM")
-        c = candidates[0]
-        chosen = slim_candidate(c)
-
+        # Your desired behavior: return full info (with pen)
+        chosen = to_candidate_payload(candidates[0])
         return {
             "final_decision": "CONFIRM",
-            "selected_candidate": c.get("student_id"),
+            "selected_candidate": chosen.get("student_id"),
             "confidence": 1.0,
             "llm_used": False,
             "analysis": {
                 "decision": "CONFIRM",
                 "confidence": 1.0,
                 "reasons": ["Single candidate returned from search"],
-                "chosen_candidate": chosen,   # full record echo
+                "chosen_candidate": chosen,
                 "mismatches": [],
-                "ranked_candidates": [],
+                "review_candidates": [],
                 "suspected_input_issues": [],
             },
             "route": "end",
         }
 
-    print(f"DEBUG: Multiple candidates ({candidate_count}) found - routing to LLM analysis")
     return {"route": "llm_analyze", "llm_used": True}
 
 
 def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, Any]:
-    """
-    Analyze candidates using LLM to make final decision
-    Only called when multiple candidates are found
-    """
     request = state["request"]
     candidates = state["candidates"]
 
     print(f"DEBUG: LLM Analysis starting with {len(candidates)} candidates")
 
-    # Slim candidates: keep only the fields that schema allows (prevents schema/token issues)
-    candidates_for_llm: List[Dict[str, Any]] = [slim_candidate(c) for c in candidates[:20]]
-
-    print(f"DEBUG: Prepared {len(candidates_for_llm)} candidates for LLM analysis")
+    # pass top 20, with core fields + extras
+    candidates_for_llm = [to_candidate_payload(c) for c in candidates[:20]]
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         request_json=json.dumps(request, ensure_ascii=False, indent=2),
@@ -161,15 +173,12 @@ def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, 
         result = llm_client.with_structured_output_and_system(CandidateAnalysis).invoke(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            temperature=0.1,   # for gpt-4o-mini this is fine
+            temperature=0.1,  # works for gpt-4o-mini
         )
 
-        print(f"DEBUG: LLM returned decision: {result.decision} with confidence: {result.confidence}")
-
-        # If CONFIRM, set selected_candidate from chosen_candidate.student_id
         selected_id = None
         if result.chosen_candidate is not None:
-            selected_id = result.chosen_candidate.student_id if result.chosen_candidate else None
+            selected_id = result.chosen_candidate.student_id
 
         return {
             "analysis": result.model_dump(),
@@ -189,8 +198,10 @@ def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, 
                 "reasons": [f"LLM analysis failed: {str(e)}"],
                 "chosen_candidate": None,
                 "mismatches": [],
-                "ranked_candidates": [],
-                "suspected_input_issues": [{"field": "unknown", "issue": "conflict", "hint": "LLM call failed; check model deployment/base_url/schema."}],
+                "review_candidates": [],
+                "suspected_input_issues": [
+                    {"field": "unknown", "issue": "conflict", "hint": "LLM call failed; check model/base_url/schema/prompt."}
+                ],
             },
             "final_decision": "NO_MATCH",
             "selected_candidate": None,

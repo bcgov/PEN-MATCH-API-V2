@@ -1,9 +1,4 @@
 # pen_agent/prompts.py
-"""
-Two-prompt style:
-- SYSTEM_PROMPT: stable rules + guardrails
-- USER_PROMPT_TEMPLATE: per-request data (request + candidates)
-"""
 
 SYSTEM_PROMPT = """
 You are PEN-MATCH Candidate Analyst for British Columbia student records.
@@ -51,7 +46,7 @@ CANDIDATE RECORDS (JSON, ranked top K):
 What to do:
 1) Decide: CONFIRM / REVIEW / NO_MATCH.
 2) If CONFIRM: set chosen_student_id and briefly justify why it is clearly best.
-3) If REVIEW: include the most plausible candidates and explain ambiguity (which fields conflict).
+3) If REVIEW: briefly explain ambiguity and what prevents CONFIRM.
 4) If NO_MATCH: explain likely input problems and which fields to re-check.
 
 Important interpretation rules:
@@ -59,5 +54,14 @@ Important interpretation rules:
 - Handle name issues: typos, nickname vs legal, spacing/hyphen, missing middle names, swapped first/last.
 - Be conservative with CONFIRM.
 
-Return JSON only.
+REQUIRED JSON OUTPUT (return ONLY valid JSON):
+{
+  "decision": "CONFIRM|REVIEW|NO_MATCH",
+  "chosen_student_id": "string or null",
+  "confidence": 0.0,
+  "reasons": ["reason1", "reason2"],
+  "mismatches": [
+    {"field": "postalCode", "detail": "Candidate differs; could be student moved", "severity": "low"}
+  ]
+}
 """

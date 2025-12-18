@@ -16,7 +16,7 @@ class LLMClient:
         self,
         api_key: str,
         base_url: Optional[str] = None,
-        model: str = "o4-mini",
+        model: str = "gpt-4o-mini",
         timeout: Optional[float] = None,
         max_retries: int = 2,
     ):

@@ -10,8 +10,8 @@ class PenMatchWorkflow:
         # Initialize LLM client with clean separation of concerns
         self.llm_client = LLMClient(
             api_key=settings.openai_api_key,
-            base_url=settings.openai_api_base_o4_mini,
-            model="o4-mini"
+            base_url=settings.openai_api_base,
+            model="gpt-4o-mini"
         )
         
         # Build the workflow graph

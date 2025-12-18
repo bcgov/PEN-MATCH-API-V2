@@ -55,13 +55,13 @@ Important interpretation rules:
 - Be conservative with CONFIRM.
 
 REQUIRED JSON OUTPUT (return ONLY valid JSON):
-{
+{{
   "decision": "CONFIRM|REVIEW|NO_MATCH",
   "chosen_student_id": "string or null",
   "confidence": 0.0,
   "reasons": ["reason1", "reason2"],
   "mismatches": [
-    {"field": "postalCode", "detail": "Candidate differs; could be student moved", "severity": "low"}
+    {{"field": "postalCode", "detail": "Candidate differs; could be student moved", "severity": "low"}}
   ]
-}
+}}
 """

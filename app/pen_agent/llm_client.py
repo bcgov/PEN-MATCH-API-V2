@@ -1,221 +1,185 @@
-from typing import Dict, Any, Optional, Type
-import json
+from __future__ import annotations
+
+from typing import Optional, Type, List, Union, Any, Dict
+from types import SimpleNamespace
+
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
 
 class LLMClient:
-    """Centralized LLM client using LangChain with reusable methods"""
-    
-    def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gpt-4o-mini"):
-        # Initialize LangChain ChatOpenAI
-        llm_kwargs = {
-            "api_key": api_key,
-            "model": model,
-            "temperature": 0.1
-        }
-        
-        if base_url:
-            llm_kwargs["base_url"] = base_url
-        
-        self.llm = ChatOpenAI(**llm_kwargs)
-        self.model = model
+    """Centralized LLM client using LangChain with reusable methods (fixed)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
+        model: str = "gpt-4o-mini",
+        timeout: Optional[float] = None,
+        max_retries: int = 2,
+    ):
+        self.api_key = api_key
         self.base_url = base_url
-        
-        # Create different temperature variants
-        self.creative_llm = ChatOpenAI(**{**llm_kwargs, "temperature": 0.7})
-        self.analytical_llm = ChatOpenAI(**{**llm_kwargs, "temperature": 0.1})
-    
+        self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+
+    def _make_llm(self, temperature: float, max_tokens: Optional[int] = None) -> ChatOpenAI:
+        kwargs: Dict[str, Any] = {
+            "api_key": self.api_key,
+            "model": self.model,          # OpenAI model name OR Azure deployment name
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries,
+        }
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        return ChatOpenAI(**kwargs)
+
+    @staticmethod
+    def _safe_fallback(schema_class: Type[BaseModel], error: Exception) -> BaseModel:
+        """
+        Best-effort fallback for PEN-MATCH style schemas.
+        Uses model_construct() to avoid crashing if schema has required fields.
+        """
+        payload = {
+            "decision": "NO_MATCH",
+            "confidence": 0.0,
+            "reasons": [f"LLM analysis failed: {str(error)}"],
+            "mismatches": {},
+        }
+        try:
+            return schema_class(**payload)
+        except Exception:
+            # Pydantic v2: bypass validation (keeps pipeline alive)
+            return schema_class.model_construct(**payload)
+
     def with_structured_output(self, schema_class: Type[BaseModel]):
-        """Create structured output handler for Pydantic schemas using LangChain"""
-        def invoke(prompt: str, temperature: float = 0.1) -> BaseModel:
+        """Structured output from a single user prompt (no system message)."""
+
+        def invoke(user_prompt: str, temperature: float = 0.1, max_tokens: Optional[int] = None) -> BaseModel:
             try:
-                # Create a chain for structured output
-                parser = JsonOutputParser(pydantic_object=schema_class)
-                
-                # Create prompt template with format instructions
-                prompt_template = ChatPromptTemplate.from_messages([
-                    HumanMessagePromptTemplate.from_template(
-                        "{prompt}\n\n{format_instructions}"
-                    )
+                llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+
+                prompt = ChatPromptTemplate.from_messages([
+                    ("user", "{user_prompt}")
                 ])
-                
-                # Use appropriate LLM based on temperature
-                llm = self.creative_llm if temperature > 0.5 else self.analytical_llm
-                llm.temperature = temperature
-                
-                # Create the chain
-                chain = (
-                    {
-                        "prompt": RunnablePassthrough(),
-                        "format_instructions": lambda x: parser.get_format_instructions()
-                    }
-                    | prompt_template
-                    | llm
-                    | parser
-                )
-                
-                # Invoke the chain
-                result = chain.invoke(prompt)
-                
-                # Convert to Pydantic model if needed
+
+                chain = prompt | llm.with_structured_output(schema_class)
+
+                result = chain.invoke({"user_prompt": user_prompt})
+
+                if isinstance(result, BaseModel):
+                    return result
                 if isinstance(result, dict):
                     return schema_class(**result)
-                return result
-                
+                # Unexpected type: convert to string and fail-safe
+                raise TypeError(f"Unexpected structured output type: {type(result)}")
+
             except Exception as e:
-                print(f"Error in LangChain LLM call: {e}")
-                # Return default "no match" response on error
-                return schema_class(
-                    decision="NO_MATCH",
-                    confidence=0.0,
-                    reasons=[f"LLM analysis failed: {str(e)}"],
-                    mismatches={}
-                )
-        
-        return type('StructuredOutput', (), {'invoke': invoke})()
-    
+                print(f"Error in structured LLM call: {e}")
+                return self._safe_fallback(schema_class, e)
+
+        # IMPORTANT: return invoke as an instance attribute (no method binding)
+        return SimpleNamespace(invoke=invoke)
+
     def with_structured_output_and_system(self, schema_class: Type[BaseModel]):
-        """Create structured output handler with system prompt support for Pydantic schemas using LangChain"""
-        def invoke(system_prompt: str, user_prompt: str, temperature: float = 0.1) -> BaseModel:
+        """Structured output with a system prompt + user prompt."""
+
+        def invoke(
+            system_prompt: str,
+            user_prompt: str,
+            temperature: float = 0.1,
+            max_tokens: Optional[int] = None,
+        ) -> BaseModel:
             try:
-                # Create a chain for structured output with system prompt
-                parser = JsonOutputParser(pydantic_object=schema_class)
-                
-                # Create prompt template with system and user messages + format instructions
-                prompt_template = ChatPromptTemplate.from_messages([
-                    SystemMessagePromptTemplate.from_template(system_prompt),
-                    HumanMessagePromptTemplate.from_template(
-                        user_prompt + "\n\n{format_instructions}"
-                    )
+                llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+
+                prompt = ChatPromptTemplate.from_messages([
+                    ("system", "{system_prompt}"),
+                    ("user", "{user_prompt}"),
                 ])
-                
-                # Use appropriate LLM based on temperature
-                llm = self.creative_llm if temperature > 0.5 else self.analytical_llm
-                llm.temperature = temperature
-                
-                # Create the chain with format instructions
-                chain = prompt_template | llm | parser
-                
-                # Invoke the chain with format instructions
+
+                chain = prompt | llm.with_structured_output(schema_class)
+
                 result = chain.invoke({
-                    "format_instructions": parser.get_format_instructions()
+                    "system_prompt": system_prompt,
+                    "user_prompt": user_prompt,
                 })
-                
-                # Convert to Pydantic model if needed
+
+                if isinstance(result, BaseModel):
+                    return result
                 if isinstance(result, dict):
                     return schema_class(**result)
-                return result
-                
+                raise TypeError(f"Unexpected structured output type: {type(result)}")
+
             except Exception as e:
-                print(f"Error in LangChain LLM call with system prompt: {e}")
-                # Return default "no match" response on error
-                return schema_class(
-                    decision="NO_MATCH",
-                    confidence=0.0,
-                    reasons=[f"LLM analysis failed: {str(e)}"],
-                    mismatches={}
-                )
-        
-        return type('StructuredOutputWithSystem', (), {'invoke': invoke})()
-    
+                print(f"Error in structured LLM call with system prompt: {e}")
+                return self._safe_fallback(schema_class, e)
+
+        return SimpleNamespace(invoke=invoke)
+
     def generate_text(self, prompt: str, temperature: float = 0.7, max_tokens: Optional[int] = None) -> str:
-        """Simple text generation using LangChain"""
+        """Simple text generation (string output)."""
         try:
-            # Create LLM with specific settings
-            llm = ChatOpenAI(
-                api_key=self.llm.api_key,
-                model=self.model,
-                base_url=self.base_url,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # Create simple chain
-            chain = ChatPromptTemplate.from_template("{prompt}") | llm | StrOutputParser()
-            
-            result = chain.invoke({"prompt": prompt})
-            return result
-            
+            llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+            chain = ChatPromptTemplate.from_messages([("user", "{prompt}")]) | llm | StrOutputParser()
+            return chain.invoke({"prompt": prompt})
         except Exception as e:
-            print(f"Error in LangChain text generation: {e}")
+            print(f"Error in text generation: {e}")
             return f"Error: {str(e)}"
-    
-    def analyze_with_context(self, system_prompt: str, user_prompt: str, temperature: float = 0.1) -> str:
-        """Analysis with system context using LangChain"""
+
+    def analyze_with_context(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Analysis with system context (string output)."""
         try:
-            # Create LLM with specific temperature
-            llm = ChatOpenAI(
-                api_key=self.llm.api_key,
-                model=self.model,
-                base_url=self.base_url,
-                temperature=temperature
+            llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+            chain = (
+                ChatPromptTemplate.from_messages([
+                    ("system", "{system_prompt}"),
+                    ("user", "{user_prompt}"),
+                ])
+                | llm
+                | StrOutputParser()
             )
-            
-            # Create prompt template with system and human messages
-            prompt_template = ChatPromptTemplate.from_messages([
-                SystemMessagePromptTemplate.from_template(system_prompt),
-                HumanMessagePromptTemplate.from_template(user_prompt)
-            ])
-            
-            # Create chain
-            chain = prompt_template | llm | StrOutputParser()
-            
-            result = chain.invoke({})
-            return result
-            
+            return chain.invoke({"system_prompt": system_prompt, "user_prompt": user_prompt})
         except Exception as e:
-            print(f"Error in LangChain contextual analysis: {e}")
+            print(f"Error in contextual analysis: {e}")
             return f"Error: {str(e)}"
-    
-    def create_custom_chain(self, prompt_template: str, output_parser=None, temperature: float = 0.1):
-        """Create a custom LangChain chain for specific use cases"""
+
+    def create_custom_chain(
+        self,
+        prompt_template: Union[str, ChatPromptTemplate],
+        output_parser=None,
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
+    ):
+        """Create a reusable LangChain chain."""
         try:
-            # Create LLM with specific temperature
-            llm = ChatOpenAI(
-                api_key=self.llm.api_key,
-                model=self.model,
-                base_url=self.base_url,
-                temperature=temperature
-            )
-            
-            # Create prompt template
-            prompt = ChatPromptTemplate.from_template(prompt_template)
-            
-            # Create chain with or without parser
+            llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+            prompt = prompt_template if isinstance(prompt_template, ChatPromptTemplate) else ChatPromptTemplate.from_template(prompt_template)
             if output_parser:
-                chain = prompt | llm | output_parser
-            else:
-                chain = prompt | llm | StrOutputParser()
-            
-            return chain
-            
+                return prompt | llm | output_parser
+            return prompt | llm | StrOutputParser()
         except Exception as e:
             print(f"Error creating custom chain: {e}")
             return None
-    
-    def batch_analyze(self, prompts: list, temperature: float = 0.1) -> list:
-        """Batch process multiple prompts efficiently"""
+
+    def batch_analyze(self, prompts: List[str], temperature: float = 0.1, max_tokens: Optional[int] = None) -> List[str]:
+        """Batch process multiple prompts (string outputs)."""
         try:
-            # Create LLM for batch processing
-            llm = ChatOpenAI(
-                api_key=self.llm.api_key,
-                model=self.model,
-                base_url=self.base_url,
-                temperature=temperature
-            )
-            
-            # Create simple chain
-            chain = ChatPromptTemplate.from_template("{prompt}") | llm | StrOutputParser()
-            
-            # Use batch processing
-            inputs = [{"prompt": prompt} for prompt in prompts]
-            results = chain.batch(inputs)
-            
-            return results
-            
+            llm = self._make_llm(temperature=temperature, max_tokens=max_tokens)
+            chain = ChatPromptTemplate.from_messages([("user", "{prompt}")]) | llm | StrOutputParser()
+            inputs = [{"prompt": p} for p in prompts]
+            return chain.batch(inputs)
         except Exception as e:
             print(f"Error in batch analysis: {e}")
             return [f"Error: {str(e)}" for _ in prompts]

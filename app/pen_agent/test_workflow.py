@@ -64,12 +64,12 @@ def test_pen_match_workflow():
             print(f"Reasons: {analysis.get('reasons', [])}")
             print(f"Mismatches: {analysis.get('mismatches', {})}")
         
-        if result.get('candidates'):
-            print(f"\nCandidates Debug Info:")
-            for i, candidate in enumerate(result.get('candidates', []), 1):
-                print(f"Candidate {i}:")
-                print(json.dumps(candidate, indent=2))
-                print("-" * 30)
+        # if result.get('candidates'):
+        #     print(f"\nCandidates Debug Info:")
+        #     for i, candidate in enumerate(result.get('candidates', []), 1):
+        #         print(f"Candidate {i}:")
+        #         print(json.dumps(candidate, indent=2))
+        #         print("-" * 30)
         
         return result
         

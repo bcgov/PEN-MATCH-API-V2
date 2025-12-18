@@ -99,7 +99,7 @@ class LLMClient:
                 # Create the chain
                 chain = (
                     {
-                        "user_prompt": RunnablePassthrough(),
+                        "user_prompt": lambda x: user_prompt,
                         "format_instructions": lambda x: parser.get_format_instructions()
                     }
                     | prompt_template
@@ -107,8 +107,8 @@ class LLMClient:
                     | parser
                 )
                 
-                # Invoke the chain
-                result = chain.invoke(user_prompt)
+                # Invoke the chain with empty input since we're using lambda functions
+                result = chain.invoke({})
                 
                 # Convert to Pydantic model if needed
                 if isinstance(result, dict):

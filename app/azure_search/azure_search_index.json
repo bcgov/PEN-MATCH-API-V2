@@ -1,0 +1,63 @@
+{
+  "name": "student-index",
+  "fields": [
+    { "name": "student_id", "type": "Edm.String", "key": true, "searchable": false, "filterable": true, "sortable": false },
+    { "name": "pen", "type": "Edm.String", "searchable": false, "filterable": true, "sortable": false },
+
+    { "name": "legalFirstName", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "legalMiddleNames", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "legalLastName", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    {
+      "name": "nameEmbedding",
+      "type": "Collection(Edm.Single)",
+      "searchable": true,
+      "filterable": false,
+      "sortable": false,
+      "retrievable": true,
+      "dimensions": 1536,
+      "vectorSearchProfile": "vector-profile"
+    },
+
+    { "name": "dob", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "sexCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "postalCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "mincode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "gradeCode", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false },
+    { "name": "localID", "type": "Edm.String", "searchable": true, "filterable": true, "sortable": false }
+  ],
+
+  "scoringProfiles": [
+    {
+      "name": "identityScoring",
+      "text": {
+        "weights": {
+          "legalFirstName": 10,
+          "legalLastName": 10,
+          "legalMiddleNames": 2,
+          "dob": 8,
+          "postalCode": 5,
+          "mincode": 4,
+          "sexCode": 3,
+          "gradeCode": 1,
+          "localID": 1
+        }
+      }
+    }
+  ],
+
+  "vectorSearch": {
+    "profiles": [
+      { "name": "vector-profile", "algorithm": "hnsw-algorithm" }
+    ],
+    "algorithms": [
+      {
+        "name": "hnsw-algorithm",
+        "kind": "hnsw",
+        "hnswParameters": {
+          "m": 16,
+          "efConstruction": 200
+        }
+      }
+    ]
+  }
+}

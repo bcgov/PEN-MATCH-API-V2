@@ -1,0 +1,250 @@
+name: Test OpenAI Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'app/openai_function.py'
+      - 'requirements-test.txt'
+      - '.github/workflows/test-openai.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'app/openai_function.py'
+      - 'requirements-test.txt'
+  workflow_dispatch:
+    inputs:
+      test_model:
+        description: 'Azure OpenAI model to test'
+        required: false
+        default: 'gpt-4o-mini'
+        type: choice
+        options:
+          - 'gpt-4o-mini'
+          - 'gpt-4o'
+          - 'gpt-35-turbo'
+
+permissions:
+  id-token: write
+  contents: read
+  checks: write
+
+jobs:
+  test-openai:
+    name: Test Azure OpenAI Integration
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 15
+    
+    env:
+      # Azure OpenAI Configuration
+      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      AZURE_OPENAI_ENDPOINT: "https://pen-match-v2-foundry.openai.azure.com/"
+      AZURE_OPENAI_DEPLOYMENT_NAME: ${{ github.event.inputs.test_model || 'gpt-4o-mini' }}
+      
+      # Python environment
+      PYTHONPATH: ${{ github.workspace }}
+      PYTHONUNBUFFERED: 1
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Validate Environment
+        run: |
+          echo "🔍 Environment Validation"
+          echo "Python version: $(python --version)"
+          echo "Working directory: $(pwd)"
+          echo "OpenAI Endpoint: $AZURE_OPENAI_ENDPOINT"
+          echo "Deployment Model: $AZURE_OPENAI_DEPLOYMENT_NAME"
+          
+          # Check for required files
+          if [ ! -f "app/openai_function.py" ]; then
+            echo "❌ openai_function.py not found"
+            exit 1
+          fi
+          
+          if [ ! -f "requirements-test.txt" ]; then
+            echo "❌ requirements-test.txt not found"
+            exit 1
+          fi
+          
+          echo "✅ All required files found"
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing Python dependencies..."
+          python -m pip install --upgrade pip setuptools wheel
+          
+          # Install test requirements
+          if [ -f "requirements-test.txt" ]; then
+            pip install -r requirements-test.txt
+          else
+            # Fallback to essential packages
+            pip install openai>=1.3.0 python-dotenv>=1.0.0
+          fi
+          
+          # Verify installations
+          echo "📋 Installed packages:"
+          pip list | grep -E "(openai|python-dotenv)"
+
+      - name: Validate Azure OpenAI Configuration
+        run: |
+          echo "🔐 Validating Azure OpenAI configuration..."
+          
+          # Check API key format (should be 32+ chars)
+          if [ ${#AZURE_OPENAI_API_KEY} -lt 32 ]; then
+            echo "❌ Azure OpenAI API key appears invalid (too short)"
+            exit 1
+          fi
+          
+          # Check endpoint format
+          if [[ ! "$AZURE_OPENAI_ENDPOINT" =~ ^https://.*\.openai\.azure\.com/$ ]]; then
+            echo "❌ Azure OpenAI endpoint format appears invalid"
+            exit 1
+          fi
+          
+          echo "✅ Configuration validation passed"
+
+      - name: Run OpenAI Function Test
+        id: openai_test
+        run: |
+          echo "🧪 Running OpenAI Function Calling Test..."
+          echo "Model: $AZURE_OPENAI_DEPLOYMENT_NAME"
+          echo "Endpoint: $AZURE_OPENAI_ENDPOINT"
+          echo "----------------------------------------"
+          
+          # Run the test script with timeout
+          timeout 300s python app/openai_function.py > test_results.log 2>&1
+          TEST_EXIT_CODE=$?
+          
+          echo "Test exit code: $TEST_EXIT_CODE"
+          
+          # Display results
+          echo "📊 Test Output:"
+          cat test_results.log
+          
+          if [ $TEST_EXIT_CODE -eq 0 ]; then
+            echo "test_status=success" >> $GITHUB_OUTPUT
+            echo "✅ OpenAI test completed successfully"
+          else
+            echo "test_status=failure" >> $GITHUB_OUTPUT
+            echo "❌ OpenAI test failed"
+            exit 1
+          fi
+
+      - name: Generate Test Report
+        if: always()
+        run: |
+          echo "📝 Generating test report..."
+          
+          cat > test_report.md << 'EOF'
+          # Azure OpenAI Integration Test Report
+          
+          ## Test Configuration
+          - **Model**: ${{ env.AZURE_OPENAI_DEPLOYMENT_NAME }}
+          - **Endpoint**: ${{ env.AZURE_OPENAI_ENDPOINT }}
+          - **Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          - **Workflow Run**: ${{ github.run_number }}
+          
+          ## Test Results
+          EOF
+          
+          if [ "${{ steps.openai_test.outputs.test_status }}" == "success" ]; then
+            echo "✅ **Status**: PASSED" >> test_report.md
+            echo "" >> test_report.md
+            echo "The Azure OpenAI integration test completed successfully. Function calling is working correctly." >> test_report.md
+          else
+            echo "❌ **Status**: FAILED" >> test_report.md
+            echo "" >> test_report.md
+            echo "The Azure OpenAI integration test failed. Please check the logs for details." >> test_report.md
+          fi
+          
+          echo "" >> test_report.md
+          echo "## Test Output" >> test_report.md
+          echo "\`\`\`" >> test_report.md
+          if [ -f "test_results.log" ]; then
+            cat test_results.log >> test_report.md
+          else
+            echo "No test output available" >> test_report.md
+          fi
+          echo "\`\`\`" >> test_report.md
+
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openai-test-results-${{ github.run_number }}
+          path: |
+            test_results.log
+            test_report.md
+          retention-days: 30
+
+      - name: Add Results to Job Summary
+        if: always()
+        run: |
+          echo "## 🧪 Azure OpenAI Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ steps.openai_test.outputs.test_status }}" == "success" ]; then
+            echo "✅ **Test Status**: PASSED" >> $GITHUB_STEP_SUMMARY
+            echo "🎉 Azure OpenAI function calling is working correctly!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Test Status**: FAILED" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️  There are issues with the Azure OpenAI integration." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration Used" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model**: ${{ env.AZURE_OPENAI_DEPLOYMENT_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Endpoint**: ${{ env.AZURE_OPENAI_ENDPOINT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Workflow Run**: #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "test_results.log" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Test Output Preview" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            head -20 test_results.log >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Post-Test Cleanup
+        if: always()
+        run: |
+          echo "🧹 Cleaning up test environment..."
+          
+          # Remove any temporary files
+          rm -f .env 2>/dev/null || true
+          
+          # Clear sensitive environment variables (though they're already masked)
+          unset AZURE_OPENAI_API_KEY
+          
+          echo "✅ Cleanup completed"
+
+  notify:
+    name: Notify Test Results
+    needs: test-openai
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'push'
+    
+    steps:
+      - name: Notify Success
+        if: needs.test-openai.result == 'success'
+        run: |
+          echo "✅ Azure OpenAI integration tests passed successfully!"
+          echo "The deployment pipeline can proceed with confidence."
+
+      - name: Notify Failure
+        if: needs.test-openai.result == 'failure'
+        run: |
+          echo "❌ Azure OpenAI integration tests failed!"
+          echo "Please review the test results before proceeding with deployment."
+          echo "Check the test artifacts for detailed logs."

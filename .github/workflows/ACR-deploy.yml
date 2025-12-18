@@ -1,0 +1,51 @@
+name: Build & Push to ACR & Restart App
+
+on:
+  workflow_dispatch:
+
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      ACR_NAME: penmatchacr
+      ACR_LOGIN_SERVER: penmatchacr.azurecr.io
+      IMAGE_NAME: pen-match-v2-docker
+      APP_SERVICE_NAME: pen-match-api-v2-app
+      RESOURCE_GROUP: pen-match-api-v2
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Login to Azure using OIDC (Entra app / client-id)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # 3. Login to ACR (using the same identity)
+      - name: ACR Login
+        run: az acr login --name $ACR_NAME
+
+      # 4. Build & Push :latest image
+      - name: Build and push container image (:latest)
+        run: |
+          docker build -t $ACR_LOGIN_SERVER/$IMAGE_NAME:latest .
+          docker push $ACR_LOGIN_SERVER/$IMAGE_NAME:latest
+
+      # 5. Restart App Service so it pulls the new :latest
+      - name: Restart App Service
+        run: |
+          az webapp restart \
+            --name $APP_SERVICE_NAME \
+            --resource-group $RESOURCE_GROUP

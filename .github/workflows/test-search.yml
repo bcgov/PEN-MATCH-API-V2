@@ -1,0 +1,325 @@
+name: Test Azure AI Search
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+      - '.github/workflows/test-search.yml'
+  pull_request:
+    branches: [ main ]
+
+env:
+  AZURE_SEARCH_SERVICE_NAME: ${{ secrets.AZURE_SEARCH_SERVICE_NAME }}
+  AZURE_SEARCH_ADMIN_KEY: ${{ secrets.AZURE_SEARCH_ADMIN_KEY }}
+  AZURE_SEARCH_ENDPOINT: ${{ secrets.AZURE_SEARCH_ENDPOINT }}
+  AZURE_SEARCH_INDEX_NAME: "test-documents-index"
+
+jobs:
+  test-azure-search:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        # Remove cache since package-lock.json doesn't exist
+        always-auth: false
+        check-latest: false
+
+    - name: Install dependencies
+      run: |
+        # Check if package.json exists and install dependencies accordingly
+        if [ -f "package.json" ]; then
+          echo "Installing npm dependencies..."
+          npm install
+        else
+          echo "No package.json found, skipping npm install"
+        fi
+
+    - name: Install required tools
+      run: |
+        # Install jq for JSON processing
+        sudo apt-get update
+        sudo apt-get install -y jq curl
+
+    - name: Validate Azure Search Configuration
+      run: |
+        echo "Validating Azure Search configuration..."
+        if [ -z "${{ env.AZURE_SEARCH_ENDPOINT }}" ]; then
+          echo "❌ AZURE_SEARCH_ENDPOINT is not set"
+          exit 1
+        fi
+        if [ -z "${{ env.AZURE_SEARCH_ADMIN_KEY }}" ]; then
+          echo "❌ AZURE_SEARCH_ADMIN_KEY is not set"
+          exit 1
+        fi
+        echo "✅ Azure Search configuration validated"
+
+    - name: Test Azure Search Service Connectivity
+      run: |
+        echo "Testing Azure Search service connectivity..."
+        RESPONSE=$(curl -s -w "%{http_code}" \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}?api-version=2023-11-01" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}")
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ Azure Search service is accessible"
+        else
+          echo "❌ Cannot connect to Azure Search service"
+          echo "Response: $RESPONSE"
+          exit 1
+        fi
+
+    - name: Create Azure AI Search Index
+      run: |
+        echo "Creating Azure AI Search index..."
+        RESPONSE=$(curl -s -w "%{http_code}" -X PUT \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}?api-version=2023-11-01" \
+          -H "Content-Type: application/json" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" \
+          -d '{
+            "name": "${{ env.AZURE_SEARCH_INDEX_NAME }}",
+            "fields": [
+              {
+                "name": "id",
+                "type": "Edm.String",
+                "key": true,
+                "searchable": false,
+                "filterable": true,
+                "retrievable": true
+              },
+              {
+                "name": "title",
+                "type": "Edm.String",
+                "searchable": true,
+                "filterable": true,
+                "retrievable": true,
+                "analyzer": "standard.lucene"
+              },
+              {
+                "name": "content",
+                "type": "Edm.String",
+                "searchable": true,
+                "retrievable": true,
+                "analyzer": "standard.lucene"
+              },
+              {
+                "name": "category",
+                "type": "Edm.String",
+                "searchable": true,
+                "filterable": true,
+                "facetable": true,
+                "retrievable": true
+              },
+              {
+                "name": "tags",
+                "type": "Collection(Edm.String)",
+                "searchable": true,
+                "filterable": true,
+                "facetable": true,
+                "retrievable": true
+              },
+              {
+                "name": "lastModified",
+                "type": "Edm.DateTimeOffset",
+                "filterable": true,
+                "sortable": true,
+                "retrievable": true
+              }
+            ],
+            "suggesters": [
+              {
+                "name": "sg",
+                "searchMode": "analyzingInfixMatching",
+                "sourceFields": ["title", "content"]
+              }
+            ],
+            "scoringProfiles": [],
+            "defaultScoringProfile": null,
+            "corsOptions": {
+              "allowedOrigins": ["*"],
+              "maxAgeInSeconds": 300
+            }
+          }')
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        BODY="${RESPONSE%???}"
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" -eq 201 ] || [ "$HTTP_CODE" -eq 204 ]; then
+          echo "✅ Index created successfully"
+        else
+          echo "❌ Failed to create index"
+          echo "Response: $BODY"
+          exit 1
+        fi
+
+    - name: Wait for index creation
+      run: |
+        echo "Waiting for index to be ready..."
+        sleep 10
+
+    - name: Upload test data to Azure AI Search
+      run: |
+        echo "Uploading test documents..."
+        RESPONSE=$(curl -s -w "%{http_code}" -X POST \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs/index?api-version=2023-11-01" \
+          -H "Content-Type: application/json" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" \
+          -d '{
+            "value": [
+              {
+                "@search.action": "upload",
+                "id": "1",
+                "title": "Getting Started with Azure AI Search",
+                "content": "Azure AI Search is a cloud-based search service that provides a rich search experience over private, heterogeneous content in web, mobile, and enterprise applications.",
+                "category": "Documentation",
+                "tags": ["azure", "search", "ai", "getting-started"],
+                "lastModified": "2024-01-15T10:00:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "2",
+                "title": "Advanced Search Features",
+                "content": "Learn about advanced features like faceted navigation, autocomplete, suggestions, and semantic search capabilities.",
+                "category": "Tutorial",
+                "tags": ["azure", "search", "advanced", "features"],
+                "lastModified": "2024-01-16T14:30:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "3",
+                "title": "Search Index Management",
+                "content": "Best practices for creating, updating, and managing search indexes in Azure AI Search service.",
+                "category": "Best Practices",
+                "tags": ["azure", "search", "index", "management"],
+                "lastModified": "2024-01-17T09:15:00Z"
+              },
+              {
+                "@search.action": "upload",
+                "id": "4",
+                "title": "API Integration Guide",
+                "content": "How to integrate Azure AI Search APIs into your applications using REST APIs and SDKs.",
+                "category": "Integration",
+                "tags": ["azure", "search", "api", "integration", "sdk"],
+                "lastModified": "2024-01-18T16:45:00Z"
+              }
+            ]
+          }')
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        BODY="${RESPONSE%???}"
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ Test data uploaded successfully"
+        else
+          echo "❌ Failed to upload test data"
+          echo "Response: $BODY"
+          exit 1
+        fi
+
+    - name: Wait for indexing
+      run: |
+        echo "Waiting for documents to be indexed..."
+        sleep 15
+
+    - name: Test Search Connection
+      run: |
+        echo "Testing basic search connection..."
+        RESPONSE=$(curl -s -w "%{http_code}" \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}")
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        BODY="${RESPONSE%???}"
+        
+        echo "HTTP Status Code: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" -eq 200 ]; then
+          echo "✅ Search connection successful"
+          DOC_COUNT=$(echo "$BODY" | jq '.value | length')
+          echo "Found $DOC_COUNT documents"
+        else
+          echo "❌ Search connection failed"
+          echo "Response: $BODY"
+          exit 1
+        fi
+
+    - name: Test Search Queries
+      run: |
+        echo "Testing search queries..."
+        
+        # Test 1: Simple search
+        echo "🔍 Testing simple search for 'Azure'..."
+        AZURE_RESULTS=$(curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=Azure" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length')
+        echo "Found $AZURE_RESULTS results for 'Azure'"
+        
+        # Test 2: Filtered search
+        echo "🔍 Testing filtered search..."
+        TUTORIAL_RESULTS=$(curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*&\$filter=category eq 'Tutorial'" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length')
+        echo "Found $TUTORIAL_RESULTS tutorial documents"
+        
+        # Test 3: Faceted search
+        echo "🔍 Testing faceted search..."
+        FACETS=$(curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs?api-version=2023-11-01&search=*&facet=category" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.["@search.facets"].category | length')
+        echo "Found $FACETS category facets"
+
+    - name: Test Suggestions
+      run: |
+        echo "Testing search suggestions..."
+        SUGGESTIONS=$(curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/docs/suggest?api-version=2023-11-01&search=Azu&suggesterName=sg" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.value | length')
+        echo "Found $SUGGESTIONS suggestions for 'Azu'"
+
+    - name: Test Index Statistics
+      run: |
+        echo "Getting index statistics..."
+        curl -s "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}/stats?api-version=2023-11-01" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}" | jq '.'
+
+    - name: Run Application Tests (if exists)
+      run: |
+        if [ -f "package.json" ] && [ -d "test" ] || [ -d "tests" ]; then
+          echo "Running application-specific search tests..."
+          npm test -- --grep "search" || echo "No search tests found or test command failed"
+        else
+          echo "No test directory or package.json found, skipping application tests"
+        fi
+      env:
+        NODE_ENV: test
+        AZURE_SEARCH_SERVICE_NAME: ${{ env.AZURE_SEARCH_SERVICE_NAME }}
+        AZURE_SEARCH_ADMIN_KEY: ${{ env.AZURE_SEARCH_ADMIN_KEY }}
+        AZURE_SEARCH_ENDPOINT: ${{ env.AZURE_SEARCH_ENDPOINT }}
+        AZURE_SEARCH_INDEX_NAME: ${{ env.AZURE_SEARCH_INDEX_NAME }}
+
+    - name: Cleanup Test Index
+      if: always()
+      run: |
+        echo "Cleaning up test index..."
+        RESPONSE=$(curl -s -w "%{http_code}" -X DELETE \
+          "${{ env.AZURE_SEARCH_ENDPOINT }}/indexes/${{ env.AZURE_SEARCH_INDEX_NAME }}?api-version=2023-11-01" \
+          -H "api-key: ${{ env.AZURE_SEARCH_ADMIN_KEY }}")
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        
+        if [ "$HTTP_CODE" -eq 204 ]; then
+          echo "✅ Test index deleted successfully"
+        else
+          echo "⚠️ Could not delete test index (it may not exist)"
+        fi

@@ -1,0 +1,110 @@
+name: Terraform Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  terraform:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 45
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: true
+      TF_INPUT: false
+      TF_IN_AUTOMATION: true
+
+      # Terraform variables
+      TF_VAR_azure_openai_api_key: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      TF_VAR_vnet_name: ${{ secrets.VNET_NAME }}
+      TF_VAR_vnet_resource_group_name: ${{ secrets.VNET_RESOURCE_GROUP_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Make scripts executable
+        run: chmod +x ./infra/scripts/import-existing-resources.sh
+
+      - name: Terraform Init
+        working-directory: ./infra
+        run: terraform init
+
+      - name: Validate Configuration
+        working-directory: ./infra
+        run: |
+          echo "Validating Terraform configuration..."
+          terraform validate
+          
+          echo "Checking required files..."
+          if [ ! -f "main.tfvars.json" ]; then
+            echo "ERROR: main.tfvars.json not found!"
+            exit 1
+          fi
+          
+          echo "✓ Configuration validation passed"
+
+      - name: Import Existing Resources
+        working-directory: ./infra
+        timeout-minutes: 15
+        run: |
+          echo "Running import script..."
+          ./scripts/import-existing-resources.sh
+          
+          echo "Checking Terraform state after import..."
+          terraform state list || echo "No resources in state yet"
+
+      - name: Terraform Plan
+        working-directory: ./infra
+        timeout-minutes: 10
+        run: |
+          echo "Running Terraform plan..."
+          terraform plan -input=false -var-file="main.tfvars.json" -out=tfplan -detailed-exitcode
+          
+          # Check if there are changes to apply
+          if [ $? -eq 2 ]; then
+            echo "Changes detected - will proceed with apply"
+            echo "CHANGES_DETECTED=true" >> $GITHUB_ENV
+          else
+            echo "No changes detected"
+            echo "CHANGES_DETECTED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Show Plan
+        working-directory: ./infra
+        if: env.CHANGES_DETECTED == 'true'
+        run: terraform show tfplan
+
+      - name: Terraform Apply
+        working-directory: ./infra
+        if: env.CHANGES_DETECTED == 'true'
+        timeout-minutes: 20
+        run: |
+          echo "Applying Terraform changes..."
+          terraform apply -auto-approve tfplan
+
+      - name: Output Results
+        working-directory: ./infra
+        run: |
+          echo "Deployment completed successfully!"
+          echo "Final state:"
+          terraform state list

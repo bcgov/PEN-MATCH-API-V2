@@ -88,7 +88,7 @@ class LLMClient:
                 prompt_template = ChatPromptTemplate.from_messages([
                     SystemMessagePromptTemplate.from_template(system_prompt),
                     HumanMessagePromptTemplate.from_template(
-                        "{user_prompt}\n\n{format_instructions}"
+                        user_prompt + "\n\n{format_instructions}"
                     )
                 ])
                 
@@ -96,19 +96,13 @@ class LLMClient:
                 llm = self.creative_llm if temperature > 0.5 else self.analytical_llm
                 llm.temperature = temperature
                 
-                # Create the chain
-                chain = (
-                    {
-                        "user_prompt": lambda x: user_prompt,
-                        "format_instructions": lambda x: parser.get_format_instructions()
-                    }
-                    | prompt_template
-                    | llm
-                    | parser
-                )
+                # Create the chain with format instructions
+                chain = prompt_template | llm | parser
                 
-                # Invoke the chain with empty input since we're using lambda functions
-                result = chain.invoke({})
+                # Invoke the chain with format instructions
+                result = chain.invoke({
+                    "format_instructions": parser.get_format_instructions()
+                })
                 
                 # Convert to Pydantic model if needed
                 if isinstance(result, dict):

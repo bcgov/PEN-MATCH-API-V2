@@ -11,16 +11,14 @@ IssueType = Literal["typo", "outdated", "missing", "conflict", "formatting"]
 
 
 class KeyValue(BaseModel):
-    """Safe replacement for Dict[str, Any] in strict structured output."""
+    """Strict-safe replacement for Dict[str, Any]."""
     model_config = ConfigDict(extra="forbid")
-
     key: str
     value: Optional[str] = None
 
 
 class Mismatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     field: str
     detail: str
     severity: Severity = "medium"
@@ -28,7 +26,6 @@ class Mismatch(BaseModel):
 
 class SuspectedInputIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     field: str
     issue: IssueType
     hint: str
@@ -36,13 +33,17 @@ class SuspectedInputIssue(BaseModel):
 
 class CandidateRecord(BaseModel):
     """
-    Candidate record that LLM can echo back.
-    Core fields + extras (stringified) to support "all fields information".
+    Full candidate reference:
+    - core fields are explicit
+    - extras contains every other field as string (so you still have "all info")
     """
     model_config = ConfigDict(extra="forbid")
 
-    # core identifiers
+    # helpful to reference which candidate in the input list
+    rank: int = Field(..., description="1-based rank in candidates_json list")
+
     student_id: str
+
     pen: Optional[str] = None
     legalFirstName: Optional[str] = None
     legalMiddleNames: Optional[str] = None
@@ -54,18 +55,15 @@ class CandidateRecord(BaseModel):
     localID: Optional[str] = None
     gradeCode: Optional[str] = None
 
-    # optional scoring/debug
     search_score: Optional[float] = None
     final_score: Optional[float] = None
     search_method: Optional[str] = None
 
-    # any remaining fields from search, as strings
     extras: List[KeyValue] = Field(default_factory=list)
 
 
 class ReviewCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     candidate: CandidateRecord
     reasons: List[str] = Field(default_factory=list)
     issues: List[Mismatch] = Field(default_factory=list)
@@ -76,16 +74,18 @@ class CandidateAnalysis(BaseModel):
 
     decision: Decision
     confidence: float = Field(..., ge=0.0, le=1.0)
+
+    # overall reasoning
     reasons: List[str] = Field(default_factory=list)
 
-    # CONFIRM: filled; otherwise null
+    # CONFIRM: must be filled; else null
     chosen_candidate: Optional[CandidateRecord] = None
 
-    # top blockers / mistakes (keep this for the structure you like)
+    # blockers summary (what prevents CONFIRM / what is wrong)
     mismatches: List[Mismatch] = Field(default_factory=list)
 
-    # REVIEW: default top 5 plausible candidates (can include "unlikely" if needed, but keep list reasonable)
+    # REVIEW: MUST contain 5 candidates (or fewer if <5 exist)
     review_candidates: List[ReviewCandidate] = Field(default_factory=list)
 
-    # NO_MATCH: suggested fields to re-check
+    # NO_MATCH: what to check
     suspected_input_issues: List[SuspectedInputIssue] = Field(default_factory=list)

@@ -111,23 +111,23 @@ def test_pen_match_workflow():
             # REVIEW: print 5 candidates, each with its own reasons/issues
             elif decision == "REVIEW":
                 review_list = analysis.get("review_candidates", [])
-                print(f"\nReview Candidates ({len(review_list)}):")
-                for idx, rc in enumerate(review_list, 1):
-                    cand = rc.get("candidate", {})
-                    print("\n" + "=" * 60)
-                    print(f"Candidate {idx}:")
-                    _print_candidate(cand, show_extras=True, extras_max=12)
+                # print(f"\nReview Candidates ({len(review_list)}):")
+                # for idx, rc in enumerate(review_list, 1):
+                #     cand = rc.get("candidate", {})
+                #     print("\n" + "=" * 60)
+                #     print(f"Candidate {idx}:")
+                #     _print_candidate(cand, show_extras=True, extras_max=12)
 
-                    reasons = rc.get("reasons", [])
-                    issues = rc.get("issues", [])
+                #     reasons = rc.get("reasons", [])
+                #     issues = rc.get("issues", [])
 
-                    print(f"  Candidate Reasons ({len(reasons)}):")
-                    for r in reasons:
-                        print(f"    - {r}")
+                #     print(f"  Candidate Reasons ({len(reasons)}):")
+                #     for r in reasons:
+                #         print(f"    - {r}")
 
-                    print(f"  Candidate Issues ({len(issues)}):")
-                    for it in issues:
-                        print(f"    - {it.get('field')} ({it.get('severity')}): {it.get('detail')}")
+                #     print(f"  Candidate Issues ({len(issues)}):")
+                #     for it in issues:
+                #         print(f"    - {it.get('field')} ({it.get('severity')}): {it.get('detail')}")
 
                 if len(review_list) == 0:
                     print("  (No review_candidates returned. Check prompt/schema compliance.)")

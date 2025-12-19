@@ -27,7 +27,7 @@ STUDENT REQUEST (JSON):
 CANDIDATE RECORDS (JSON, ranked top K, each has rank + extras):
 {candidates_json}
 
-You MUST do this:
+MANDATORY STEPS:
 1) Evaluate ALL candidates (up to 20). For each candidate, compare to the request and identify problems:
    - name typo / nickname / spacing-hyphen / swapped names
    - DOB conflict (ignore formatting differences)
@@ -35,28 +35,30 @@ You MUST do this:
    - sex conflict
    - clearly wrong last name (strong negative)
 
-2) Decision outputs:
-- CONFIRM:
-  * chosen_candidate: the ONE best candidate (copy the full candidate object INCLUDING extras).
-  * mismatches: include minor mistakes (typo/outdated fields) if any.
-  * review_candidates: must be empty.
-- REVIEW:
-  * chosen_candidate: null.
-  * review_candidates: MUST include exactly 5 DISTINCT candidates (different student_id), unless fewer than 5 candidates exist.
-    - These should be the 5 most plausible after your re-ranking (not just top search score).
-    - For EACH of the 5 candidates:
-        - candidate: copy the full candidate object INCLUDING extras.
-        - reasons: at least 2 reasons why it could be the right student.
-        - issues: list the problems for this candidate (typo, wrong postal, wrong mincode, wrong last name, etc.).
-  * mismatches: summarize the top blockers preventing CONFIRM (based on the best-looking candidate(s)).
-- NO_MATCH:
-  * chosen_candidate: null.
-  * review_candidates: empty.
-  * suspected_input_issues: list which request fields are most likely wrong/outdated and why (at least 2 if possible).
+2) Produce output:
 
-IMPORTANT: “full candidate object” means include:
-rank, student_id, pen, legalFirstName, legalMiddleNames, legalLastName, dob, sexCode,
-mincode, postalCode, localID, gradeCode, search_score, final_score, search_method, extras.
+CONFIRM:
+- chosen_candidate: the ONE best candidate (copy the full candidate object INCLUDING extras).
+- mismatches: include minor mistakes (typo/outdated fields) if any.
+- review_candidates: MUST be empty.
+
+REVIEW:
+- chosen_candidate: null.
+- review_candidates: MUST include exactly 5 DISTINCT candidates (different student_id), unless fewer than 5 candidates exist.
+  * These should be the 5 most plausible after your re-ranking (not just top search score).
+  * For EACH candidate in review_candidates:
+      - candidate: copy the full candidate object INCLUDING extras.
+      - reasons: MUST contain at least 2 distinct reasons.
+      - issues: MUST contain at least 1 issue explaining what is wrong/uncertain for this candidate.
+- mismatches: summarize the top blockers preventing CONFIRM based on the best-looking candidate(s).
+- reasons (top-level): include a short summary of why it is REVIEW.
+
+NO_MATCH:
+- chosen_candidate: null.
+- review_candidates: MUST be empty.
+- suspected_input_issues: list which request fields are most likely wrong/outdated and why (at least 2 if possible).
+
+IMPORTANT: “full candidate object” means include all keys in the candidate JSON you received.
 
 Return JSON only.
 
@@ -87,7 +89,7 @@ JSON SHAPE EXAMPLE (do NOT copy values):
         "search_score": 0.9,
         "final_score": 1.2,
         "search_method": "...",
-        "extras": [{{"key":"some_field","value":"some_value"}}]
+        "extras": [{{"key":"base_search_score","value":"0.91"}}]
       }},
       "reasons": ["...", "..."],
       "issues": [

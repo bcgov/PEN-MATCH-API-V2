@@ -35,15 +35,13 @@ class CandidateRecord(BaseModel):
     """
     Full candidate reference:
     - core fields are explicit
-    - extras contains every other field as string (so you still have "all info")
+    - extras are a small allowlist (stringified)
     """
     model_config = ConfigDict(extra="forbid")
 
-    # helpful to reference which candidate in the input list
     rank: int = Field(..., description="1-based rank in candidates_json list")
 
     student_id: str
-
     pen: Optional[str] = None
     legalFirstName: Optional[str] = None
     legalMiddleNames: Optional[str] = None
@@ -75,17 +73,14 @@ class CandidateAnalysis(BaseModel):
     decision: Decision
     confidence: float = Field(..., ge=0.0, le=1.0)
 
-    # overall reasoning
     reasons: List[str] = Field(default_factory=list)
 
-    # CONFIRM: must be filled; else null
     chosen_candidate: Optional[CandidateRecord] = None
 
-    # blockers summary (what prevents CONFIRM / what is wrong)
+    # global blockers summary
     mismatches: List[Mismatch] = Field(default_factory=list)
 
-    # REVIEW: MUST contain 5 candidates (or fewer if <5 exist)
+    # REVIEW must return up to 5
     review_candidates: List[ReviewCandidate] = Field(default_factory=list)
 
-    # NO_MATCH: what to check
     suspected_input_issues: List[SuspectedInputIssue] = Field(default_factory=list)

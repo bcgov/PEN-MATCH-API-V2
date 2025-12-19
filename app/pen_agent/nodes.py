@@ -8,6 +8,7 @@ from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
 from .llm_client import LLMClient
 
 
+# Core fields we always pass (and that schema supports)
 CORE_FIELDS = {
     "student_id", "pen",
     "legalFirstName", "legalMiddleNames", "legalLastName",
@@ -18,11 +19,28 @@ CORE_FIELDS = {
 
 RENAME_MAP = {"@search.score": "search_score"}
 
+# Keep extras small to avoid huge prompts (24k+ chars)
+# Add fields you actually want visible as reference/debug
+EXTRA_ALLOWLIST = {
+    "base_search_score",
+    "dob_sim",
+    "mincode_sim",
+    "postal_sim",
+    "sex_sim",
+    "pen_status",
+    "penStatus",
+    "@search.reranker_score",
+}
+
+MAX_EXTRAS_PER_CANDIDATE = 12
+
 
 def to_candidate_payload(candidate: Dict[str, Any], rank: int) -> Dict[str, Any]:
     """
-    Keep core fields + capture everything else in extras (as string),
-    so the LLM can repeat "full info" without Dict[str, Any].
+    Convert raw Azure Search candidate dict into:
+    - core fields (schema-defined)
+    - extras: allowlisted keys only, stringified
+    Removes embedding/vector fields.
     """
     out: Dict[str, Any] = {"rank": rank}
     extras: List[Dict[str, Any]] = []
@@ -34,19 +52,23 @@ def to_candidate_payload(candidate: Dict[str, Any], rank: int) -> Dict[str, Any]
 
         if k in CORE_FIELDS:
             out[RENAME_MAP.get(k, k)] = v
+            continue
+
+        # only keep selected extras to reduce prompt length
+        if k not in EXTRA_ALLOWLIST:
+            continue
+
+        if v is None:
+            extras.append({"key": k, "value": None})
+        elif isinstance(v, (str, int, float, bool)):
+            extras.append({"key": k, "value": str(v)})
         else:
-            # extras must be string or null
-            if v is None:
-                extras.append({"key": k, "value": None})
-            elif isinstance(v, (str, int, float, bool)):
-                extras.append({"key": k, "value": str(v)})
-            else:
-                extras.append({"key": k, "value": json.dumps(v, ensure_ascii=False)})
+            extras.append({"key": k, "value": json.dumps(v, ensure_ascii=False)})
 
     if "student_id" not in out:
         out["student_id"] = str(candidate.get("student_id", ""))
 
-    out["extras"] = extras
+    out["extras"] = extras[:MAX_EXTRAS_PER_CANDIDATE]
     return out
 
 
@@ -122,12 +144,18 @@ def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, 
     request = state["request"]
     candidates = state["candidates"]
 
-    # prepare top 20
     candidates_for_llm = [to_candidate_payload(c, rank=i + 1) for i, c in enumerate(candidates[:20])]
+
+    candidates_json_str = json.dumps(candidates_for_llm, ensure_ascii=False, indent=2)
+    print("DEBUG: candidates_json chars =", len(candidates_json_str))
+    print(
+        "DEBUG: avg extras per candidate =",
+        sum(len(c.get("extras", [])) for c in candidates_for_llm) / max(1, len(candidates_for_llm))
+    )
 
     user_prompt = USER_PROMPT_TEMPLATE.format(
         request_json=json.dumps(request, ensure_ascii=False, indent=2),
-        candidates_json=json.dumps(candidates_for_llm, ensure_ascii=False, indent=2),
+        candidates_json=candidates_json_str,
     )
 
     print(f"DEBUG: Sending prompt to LLM (user prompt length: {len(user_prompt)} chars)")
@@ -139,10 +167,16 @@ def llm_analyze_node(state: Dict[str, Any], llm_client: LLMClient) -> Dict[str, 
             temperature=0.1,
         )
 
+        dump = result.model_dump()
+        print("DEBUG: review_candidates count =", len(dump.get("review_candidates", [])))
+        if dump.get("review_candidates"):
+            print("DEBUG: review_candidates[0] preview:")
+            print(json.dumps(dump["review_candidates"][0], indent=2, ensure_ascii=False))
+
         selected_id = result.chosen_candidate.student_id if result.chosen_candidate else None
 
         return {
-            "analysis": result.model_dump(),
+            "analysis": dump,
             "final_decision": result.decision,
             "selected_candidate": selected_id,
             "confidence": result.confidence,

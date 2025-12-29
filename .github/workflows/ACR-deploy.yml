@@ -3,10 +3,9 @@ name: Build & Push to ACR & Restart App
 on:
   workflow_dispatch:
 
-
 permissions:
   id-token: write
-  contents: write
+  contents: read
 
 jobs:
   build-and-deploy:
@@ -21,66 +20,66 @@ jobs:
       RESOURCE_GROUP: pen-match-api-v2
 
     steps:
-      # 1. Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Login to Azure using OIDC (Entra app / client-id)
-      - name: Azure Login
+      # 1) OIDC login
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          # Keep this, but we will STILL force-set the subscription below
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Debugging steps to verify identity and ACR access
-      - name: who am I + what subscription/tenant?
+      # 2) Force subscription (this fixes "default subscription is another one")
+      - name: Force Azure subscription context
+        shell: bash
         run: |
-          echo "== account show =="
-          az account show --query "{name:name,id:id,tenantId:tenantId,user:user}" -o jsonc
+          set -euo pipefail
+          echo "Before set:"
+          az account show --query "{name:name,id:id,tenantId:tenantId}" -o jsonc
 
-          echo "== access token tenant (ARM) =="
-          az account get-access-token --resource https://management.azure.com/ --query "{tenant:tenant, expiresOn:expiresOn}" -o jsonc
+          az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
-      - name: list resource groups
+          echo "After set:"
+          az account show --query "{name:name,id:id,tenantId:tenantId}" -o jsonc
+
+      # 3) Guard: ensure ACR is in the subscription we expect (fail fast if not)
+      - name: Guard - confirm ACR is reachable in this subscription
+        shell: bash
         run: |
-          az group list --query "[].name" -o table
+          set -euo pipefail
+          ACR_ID=$(az acr show -n "$ACR_NAME" --query id -o tsv)
+          echo "ACR_ID=$ACR_ID"
+          echo "$ACR_ID" | grep -q "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/" \
+            || (echo "ERROR: Wrong subscription context for this ACR" && exit 1)
 
-      - name: list ACRs
+          az acr show -n "$ACR_NAME" --query "{name:name,loginServer:loginServer,resourceGroup:resourceGroup}" -o jsonc
+
+      # 4) Docker login to ACR using AAD access token (reliable in CI)
+      - name: Docker login to ACR (AAD token)
+        shell: bash
         run: |
-          az acr list --query "[].{name:name,resourceGroup:resourceGroup,loginServer:loginServer}" -o table
+          set -euo pipefail
+          TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv)
+          docker login "$ACR_LOGIN_SERVER" \
+            -u 00000000-0000-0000-0000-000000000000 \
+            -p "$TOKEN"
 
-
-      - name: can I see the ACR in ARM?
-        run: |
-          echo "== acr show =="
-          az acr show -n $ACR_NAME --query "{name:name,loginServer:loginServer,id:id,resourceGroup:resourceGroup}" -o jsonc
-
-          echo "== role assignments on ACR for this principal (may be empty if no read on MS Graph) =="
-          ACR_ID=$(az acr show -n $ACR_NAME --query id -o tsv)
-          az role assignment list --scope $ACR_ID -o table || true
-
-      - name: ACR data-plane token (this is the key test)
-        run: |
-          echo "== acr expose-token =="
-          az acr login -n $ACR_NAME --expose-token -o jsonc
-
-
-
-
-      # 3. Login to ACR (using the same identity)
-      - name: ACR Login
-        run: az acr login --name $ACR_NAME
-
-      # 4. Build & Push :latest image
+      # 5) Build & push image
       - name: Build and push container image (:latest)
+        shell: bash
         run: |
-          docker build -t $ACR_LOGIN_SERVER/$IMAGE_NAME:latest .
-          docker push $ACR_LOGIN_SERVER/$IMAGE_NAME:latest
+          set -euo pipefail
+          docker build -t "$ACR_LOGIN_SERVER/$IMAGE_NAME:latest" .
+          docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:latest"
 
-      # 5. Restart App Service so it pulls the new :latest
+      # 6) Restart App Service (so it pulls latest)
       - name: Restart App Service
+        shell: bash
         run: |
+          set -euo pipefail
           az webapp restart \
-            --name $APP_SERVICE_NAME \
-            --resource-group $RESOURCE_GROUP
+            --name "$APP_SERVICE_NAME" \
+            --resource-group "$RESOURCE_GROUP"

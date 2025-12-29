@@ -33,6 +33,32 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # Debugging steps to verify identity and ACR access
+      - name: who am I + what subscription/tenant?
+        run: |
+          echo "== account show =="
+          az account show --query "{name:name,id:id,tenantId:tenantId,user:user}" -o jsonc
+
+          echo "== access token tenant (ARM) =="
+          az account get-access-token --resource https://management.azure.com/ --query "{tenant:tenant, expiresOn:expiresOn}" -o jsonc
+
+      - name: can I see the ACR in ARM?
+        run: |
+          echo "== acr show =="
+          az acr show -n $ACR_NAME --query "{name:name,loginServer:loginServer,id:id,resourceGroup:resourceGroup}" -o jsonc
+
+          echo "== role assignments on ACR for this principal (may be empty if no read on MS Graph) =="
+          ACR_ID=$(az acr show -n $ACR_NAME --query id -o tsv)
+          az role assignment list --scope $ACR_ID -o table || true
+
+      - name: ACR data-plane token (this is the key test)
+        run: |
+          echo "== acr expose-token =="
+          az acr login -n $ACR_NAME --expose-token -o jsonc
+
+
+
+
       # 3. Login to ACR (using the same identity)
       - name: ACR Login
         run: az acr login --name $ACR_NAME

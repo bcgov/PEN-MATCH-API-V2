@@ -1,4 +1,4 @@
-name: Build & Push to ACR & Restart App
+name: Build & Deploy (ACR Build) & Restart App
 
 on:
   workflow_dispatch:
@@ -14,12 +14,9 @@ jobs:
 
     env:
       ACR_NAME: penmatchacr
-      ACR_LOGIN_SERVER: penmatchacr.azurecr.io
       IMAGE_NAME: pen-match-v2-docker
       APP_SERVICE_NAME: pen-match-api-v2-app
       RESOURCE_GROUP: pen-match-api-v2
-      # Hardcode known ACR resource ID to avoid "name lookup" ambiguity
-      ACR_ID: /subscriptions/5ebfa7cd-3b83-4a77-8928-b5c5b92232f9/resourceGroups/pen-match-api-v2/providers/Microsoft.ContainerRegistry/registries/penmatchacr
 
     steps:
       - name: Checkout repository
@@ -39,34 +36,20 @@ jobs:
           az account set --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
           az account show --query "{name:name,id:id,tenantId:tenantId}" -o jsonc
 
-      - name: Debug - check ACR by resource ID (permission vs missing)
+      - name: Sanity check ACR exists
         shell: bash
         run: |
           set -euo pipefail
-          echo "ACR_ID=${ACR_ID}"
-          az resource show --ids "${ACR_ID}" -o jsonc
+          az acr show -n "$ACR_NAME" --query "{name:name,loginServer:loginServer,resourceGroup:resourceGroup}" -o jsonc
 
-      - name: Get ACR login server from ARM (source of truth)
+      - name: Build image inside ACR (server-side)
         shell: bash
         run: |
           set -euo pipefail
-          az resource show --ids "${ACR_ID}" --query "properties.loginServer" -o tsv
-
-      - name: Docker login to ACR (AAD token)
-        shell: bash
-        run: |
-          set -euo pipefail
-          TOKEN=$(az acr login -n "$ACR_NAME" --expose-token --query accessToken -o tsv)
-          docker login "$ACR_LOGIN_SERVER" \
-            -u 00000000-0000-0000-0000-000000000000 \
-            -p "$TOKEN"
-
-      - name: Build and push container image (:latest)
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build -t "$ACR_LOGIN_SERVER/$IMAGE_NAME:latest" .
-          docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:latest"
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE_NAME:latest" \
+            .
 
       - name: Restart App Service
         shell: bash

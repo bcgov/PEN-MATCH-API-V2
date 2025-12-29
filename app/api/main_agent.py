@@ -152,6 +152,27 @@ def generate_recommendations(analysis: Dict[str, Any], decision: str, confidence
 # -------------------------------------------------------------------
 # API endpoint
 # -------------------------------------------------------------------
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "PEN Match Agent API is running",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0.0",
+        "endpoints": ["/analyze", "/docs"]
+    }
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "PEN Match Agent API"
+    }
+
+
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_match(student_query: StudentQuery):
     """

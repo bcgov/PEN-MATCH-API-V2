@@ -49,7 +49,8 @@ jobs:
           az acr build \
             --registry "$ACR_NAME" \
             --image "$IMAGE_NAME:latest" \
-            .
+            --file app/Dockerfile \
+            app
 
       - name: Restart App Service
         shell: bash

@@ -42,6 +42,15 @@ jobs:
           echo "== access token tenant (ARM) =="
           az account get-access-token --resource https://management.azure.com/ --query "{tenant:tenant, expiresOn:expiresOn}" -o jsonc
 
+      - name: list resource groups
+        run: |
+          az group list --query "[].name" -o table
+
+      - name: list ACRs
+        run: |
+          az acr list --query "[].{name:name,resourceGroup:resourceGroup,loginServer:loginServer}" -o table
+
+
       - name: can I see the ACR in ARM?
         run: |
           echo "== acr show =="

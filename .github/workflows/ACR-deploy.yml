@@ -1,4 +1,4 @@
-name: Build & Deploy (ACR Build) & Restart App
+name: ACR-Deploy
 
 on:
   workflow_dispatch:

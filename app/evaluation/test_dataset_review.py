@@ -50,16 +50,6 @@ def change_last_two_digits(text: str) -> str:
     
     return text
 
-def flip_sex_code(sex_code: str) -> str:
-    """Flip sex code between M and F"""
-    if sex_code.upper() == "M":
-        return "F"
-    elif sex_code.upper() == "F":
-        return "M"
-    else:
-        # If unknown format, randomly assign M or F
-        return random.choice(["M", "F"])
-
 def parse_student_record(row: List[str]) -> Dict[str, str]:
     """
     Parse a CSV row into student record using the correct column indices
@@ -127,7 +117,7 @@ def parse_student_record(row: List[str]) -> Dict[str, str]:
     }
 
 def generate_typo_queries(student: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Generate 7 typo queries for a student with CONFIRM review_label"""
+    """Generate 6 typo queries for a student with CONFIRM review_label (removed sex_code_typo)"""
     queries = []
     
     # Original record for reference
@@ -218,18 +208,7 @@ def generate_typo_queries(student: Dict[str, str]) -> List[Dict[str, Any]]:
             "typo_value": query6["mincode"]
         })
     
-    # 7. Sex code: Flip M/F
-    if student["sexCode"]:
-        query7 = original.copy()
-        query7["sexCode"] = flip_sex_code(student["sexCode"])
-        queries.append({
-            "query_type": "sex_code_typo",
-            "review_label": "CONFIRM",
-            "ground_truth_pen": student["pen_number"],
-            "query": query7,
-            "original_value": student["sexCode"],
-            "typo_value": query7["sexCode"]
-        })
+    # Removed: 7. Sex code typo queries
     
     return queries
 
@@ -351,7 +330,7 @@ def generate_review_dataset():
     processed_count = 0
     for student in all_students:
         try:
-            # Generate typo queries (7 queries with CONFIRM review_label)
+            # Generate typo queries (6 queries with CONFIRM review_label, removed sex_code_typo)
             typo_queries = generate_typo_queries(student)
             all_queries.extend(typo_queries)
             
@@ -386,13 +365,13 @@ def generate_review_dataset():
                 "purpose": "Test system ability to find correct PEN with both typos (CONFIRM) and conflicts (REVIEW)",
                 "total_students_processed": processed_count,
                 "total_queries_generated": len(all_queries),
-                "queries_per_student": 10,
+                "queries_per_student": 9,  # Updated: 6 typo + 3 conflict = 9 total
                 "query_categories": {
                     "typo_queries": {
                         "review_label": "CONFIRM",
                         "count": review_label_counts["CONFIRM"],
                         "types": ["first_name_typo", "last_name_typo", "middle_name_typo", 
-                                "dob_typo", "postal_code_typo", "mincode_typo", "sex_code_typo"]
+                                "dob_typo", "postal_code_typo", "mincode_typo"]  # Removed sex_code_typo
                     },
                     "conflict_queries": {
                         "review_label": "REVIEW", 

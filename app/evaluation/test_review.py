@@ -180,7 +180,7 @@ def run_single_test(query_info: Dict[str, Any], workflow) -> Dict[str, Any]:
             'processing_time': 0.0
         }
 
-def evaluate_agent_decisions(test_file_path: str = "app/evaluation/test_queries_review.json", max_students: int = 10) -> Dict[str, Any]:
+def evaluate_agent_decisions(test_file_path: str = "evaluation/test_queries_review.json", max_students: int = 10) -> Dict[str, Any]:
     """Evaluate PEN agent decisions against expected review labels"""
     
     print("Loading test queries...")
@@ -370,7 +370,7 @@ def print_evaluation_report(analysis: Dict[str, Any]):
             row += f"{count:<10}"
         print(row)
 
-def save_results(analysis: Dict[str, Any], output_file: str = "app/evaluation/agent_evaluation_results.json"):
+def save_results(analysis: Dict[str, Any], output_file: str = "evaluation/agent_evaluation_results.json"):
     """Save evaluation results to JSON file"""
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -385,7 +385,7 @@ def main():
     print("-" * 40)
     
     # Configuration
-    test_file = "app/evaluation/test_queries_review.json"
+    test_file = "evaluation/test_queries_review.json"
     max_students = 10  # Test first 10 students instead of 100 queries
     
     print(f"Test file: {test_file}")
@@ -404,7 +404,7 @@ def main():
         
         # Save results
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        output_file = f"app/evaluation/agent_evaluation_results_{timestamp}.json"
+        output_file = f"evaluation/agent_evaluation_results_{timestamp}.json"
         save_results(analysis, output_file)
         
         # Quick summary for easy reference

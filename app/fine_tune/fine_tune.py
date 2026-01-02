@@ -11,7 +11,7 @@ ENDPOINT = "https://pen-match-api-v2-openai-canadaeast.openai.azure.com".rstrip(
 API_KEY = settings.openai_api_key
 
 # Use the stable data-plane API version for Files + Fine-tuning Jobs
-API_VERSION = "2024-10-21"
+API_VERSION = "2024-12-01-preview"
 
 # Use the fully-qualified base model name
 BASE_MODEL = "gpt-4o-mini-2024-07-18"

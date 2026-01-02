@@ -385,6 +385,9 @@ pyrightconfig.json
 .env.*
 
 
-app/evaluation/test_queries_typo.json
-app/evaluation/test_queries_conflict.json
+
 app/evaluation/test_queries_review.json
+app/fine_tune/test_queries_review.json
+app/fine_tune/test.jsonl
+app/fine_tune/validation.jsonl
+app/fine_tune/train.jsonl

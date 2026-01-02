@@ -214,9 +214,9 @@ def main():
             if status == "succeeded":
                 ft_model = job.get("fine_tuned_model")
                 if ft_model:
-                    print(f"✅ Fine-tuned model: {ft_model}")
-                    print(f"✅ Model suffix: {SUFFIX}")
-                    print(f"✅ Training method: LoRA")
+                    print(f"Fine-tuned model: {ft_model}")
+                    print(f"Model suffix: {SUFFIX}")
+                    print(f"Training method: LoRA")
                     print(f"\nNext steps:")
                     print(f"1. Deploy the model in Azure OpenAI Studio")
                     print(f"2. Update your application to use: {ft_model}")
@@ -225,7 +225,7 @@ def main():
                     print("⚠ Succeeded but fine_tuned_model missing in response")
             else:
                 error = job.get("error", "Unknown error")
-                print(f"❌ Job failed: {error}")
+                print(f"Job failed: {error}")
                 print(f"\nJob details:")
                 print(json.dumps({k: job.get(k) for k in ["id", "status", "error", "created_at"]}, indent=2))
             
@@ -244,5 +244,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n Error: {e}")
         raise

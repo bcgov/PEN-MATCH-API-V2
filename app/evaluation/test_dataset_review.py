@@ -61,24 +61,59 @@ def flip_sex_code(sex_code: str) -> str:
         return random.choice(["M", "F"])
 
 def parse_student_record(row: List[str]) -> Dict[str, str]:
-    """Parse a CSV row into student record"""
-    if len(row) < 23:
+    """
+    Parse a CSV row into student record using the correct column indices
+    CSV Header: STUDENT_ID,PEN,LEGAL_FIRST_NAME,LEGAL_MIDDLE_NAMES,LEGAL_LAST_NAME,DOB,SEX_CODE,GENDER_CODE,USUAL_FIRST_NAME,USUAL_MIDDLE_NAMES,USUAL_LAST_NAME,EMAIL,DECEASED_DATE,CREATE_USER,CREATE_DATE,UPDATE_USER,UPDATE_DATE,POSTAL_CODE,LOCAL_ID,GRADE_CODE,MINCODE,EMAIL_VERIFIED,MEMO,GRADE_YEAR,DEMOG_CODE,STATUS_CODE,TRUE_STUDENT_ID,DOCUMENT_TYPE_CODE,DATE_OF_CONFIRMATION
+    """
+    if len(row) < 21:  # Need at least up to MINCODE (index 20)
         return None
     
-    # Extract student data
-    pen_number = row[1].strip()
-    first_name = row[2].strip()
-    middle_name = row[3].strip() if len(row) > 3 else ""
-    last_name = row[4].strip()
-    sex_code = row[6].strip() if len(row) > 6 else ""
-    postal_code = row[18].strip() if len(row) > 18 else ""
-    mincode = row[21].strip() if len(row) > 21 else ""
+    # Extract student data using correct column indices
+    pen_number = row[1].strip() if len(row) > 1 else ""  # PEN
+    first_name = row[2].strip() if len(row) > 2 else ""  # LEGAL_FIRST_NAME
+    middle_name = row[3].strip() if len(row) > 3 else ""  # LEGAL_MIDDLE_NAMES
+    last_name = row[4].strip() if len(row) > 4 else ""   # LEGAL_LAST_NAME
+    dob = row[5].strip() if len(row) > 5 else ""         # DOB
+    sex_code = row[6].strip() if len(row) > 6 else ""    # SEX_CODE
+    postal_code = row[17].strip() if len(row) > 17 else ""  # POSTAL_CODE
+    mincode = row[20].strip() if len(row) > 20 else ""   # MINCODE
     
-    # Generate a realistic DOB (format: YYYY-MM-DD)
-    year = random.randint(1990, 2010)
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)  # Use 28 to avoid month-specific day issues
-    dob = f"{year}-{month:02d}-{day:02d}"
+    # Handle DOB - if it's empty or invalid, generate a realistic one
+    if not dob or dob in ['', 'NULL', 'null']:
+        # Generate a realistic DOB (format: YYYY-MM-DD)
+        year = random.randint(1990, 2010)
+        month = random.randint(1, 12)
+        day = random.randint(1, 28)  # Use 28 to avoid month-specific day issues
+        dob = f"{year}-{month:02d}-{day:02d}"
+    else:
+        # Try to parse and reformat the DOB if it exists
+        try:
+            # Handle various DOB formats that might exist in the data
+            if len(dob) == 8 and dob.isdigit():  # YYYYMMDD
+                dob = f"{dob[:4]}-{dob[4:6]}-{dob[6:8]}"
+            elif len(dob) == 10 and dob.count('/') == 2:  # MM/DD/YYYY or DD/MM/YYYY
+                parts = dob.split('/')
+                if len(parts[2]) == 4:  # Assume MM/DD/YYYY or DD/MM/YYYY
+                    dob = f"{parts[2]}-{parts[0]:0>2}-{parts[1]:0>2}"
+            # If already in YYYY-MM-DD format, keep as is
+            elif len(dob) == 10 and dob.count('-') == 2:
+                pass  # Already in correct format
+            else:
+                # If format is unrecognizable, generate a new one
+                year = random.randint(1990, 2010)
+                month = random.randint(1, 12)
+                day = random.randint(1, 28)
+                dob = f"{year}-{month:02d}-{day:02d}"
+        except:
+            # If any parsing fails, generate a new DOB
+            year = random.randint(1990, 2010)
+            month = random.randint(1, 12)
+            day = random.randint(1, 28)
+            dob = f"{year}-{month:02d}-{day:02d}"
+    
+    # Skip records without essential data
+    if not pen_number or not first_name or not last_name:
+        return None
     
     return {
         "pen_number": pen_number,
@@ -275,42 +310,33 @@ def generate_review_dataset():
     all_queries = []
     
     try:
-        # Read the CSV file with proper encoding handling
-        with open(input_file, 'r', encoding='utf-8', errors='ignore') as file:
-            lines = file.readlines()
+        # Use proper CSV reader to handle headers and quoted fields
+        with open(input_file, 'r', encoding='utf-8') as file:
+            csv_reader = csv.reader(file)
             
-        # First pass: collect all student records
-        for line_num, line in enumerate(lines, 1):
-            try:
-                # Split by comma, handling quoted fields
-                row = []
-                current_field = ""
-                in_quotes = False
-                
-                i = 0
-                while i < len(line):
-                    char = line[i]
-                    if char == '"':
-                        in_quotes = not in_quotes
-                    elif char == ',' and not in_quotes:
-                        row.append(current_field)
-                        current_field = ""
-                    else:
-                        current_field += char
-                    i += 1
-                
-                # Add the last field
-                if current_field:
-                    row.append(current_field.strip())
-                
-                # Parse student record
-                student = parse_student_record(row)
-                if student and student["pen_number"]:
-                    all_students.append(student)
-                    
-            except Exception as e:
-                print(f"Error processing line {line_num}: {e}")
-                continue
+            # Skip header row
+            header = next(csv_reader)
+            print(f"CSV Header: {header}")
+            
+            # Verify we have the expected columns
+            expected_columns = ['STUDENT_ID', 'PEN', 'LEGAL_FIRST_NAME', 'LEGAL_MIDDLE_NAMES', 
+                              'LEGAL_LAST_NAME', 'DOB', 'SEX_CODE', 'POSTAL_CODE', 'MINCODE']
+            
+            for col in expected_columns:
+                if col not in header:
+                    print(f"Warning: Expected column '{col}' not found in header")
+            
+            # Process data rows
+            for line_num, row in enumerate(csv_reader, 2):  # Start from 2 since we skipped header
+                try:
+                    # Parse student record
+                    student = parse_student_record(row)
+                    if student and student["pen_number"]:
+                        all_students.append(student)
+                        
+                except Exception as e:
+                    print(f"Error processing line {line_num}: {e}")
+                    continue
     
     except FileNotFoundError:
         print(f"File {input_file} not found!")
@@ -395,6 +421,13 @@ def generate_review_dataset():
         for qtype, count in sorted(query_type_counts.items()):
             review_label = "CONFIRM" if "typo" in qtype else "REVIEW"
             print(f"  {qtype} ({review_label}): {count}")
+            
+        # Print sample student data for verification
+        if all_students:
+            print(f"\nSample student record:")
+            sample = all_students[0]
+            for key, value in sample.items():
+                print(f"  {key}: {value}")
         
     except Exception as e:
         print(f"Error saving output file: {e}")

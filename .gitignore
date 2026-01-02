@@ -383,3 +383,8 @@ pyrightconfig.json
 
 .env
 .env.*
+
+
+app/evaluation/test_queries_typo.json
+app/evaluation/test_queries_conflict.json
+app/evaluation/test_queries_review.json

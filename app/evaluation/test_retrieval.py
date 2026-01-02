@@ -107,7 +107,7 @@ def run_single_query(query_data: Dict[str, Any], ground_truth_pen: str, query_in
             'found_in_top_20': False
         }
 
-def run_evaluation(test_file_path: str = "test_queries_review.json", max_queries: int = None) -> Dict[str, Any]:
+def run_evaluation(test_file_path: str = "evaluation/test_queries_review.json", max_queries: int = None) -> Dict[str, Any]:
     """Run evaluation on all test queries"""
     
     print("Loading test queries...")
@@ -331,7 +331,7 @@ def main():
     print("-" * 40)
     
     # Configuration
-    test_file = "test_queries_review.json"
+    test_file = "evaluation/test_queries_review.json"
     max_queries = None  # Set to a number to limit queries for testing, None for all
     
     print(f"Test file: {test_file}")
